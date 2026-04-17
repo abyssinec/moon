@@ -1,4 +1,4 @@
-#include "MainWindow.h"
+﻿#include "MainWindow.h"
 
 #if MOON_HAS_JUCE
 namespace moon::app
@@ -28,34 +28,6 @@ MainWindow::MainWindow(AppController& controller)
 
 void MainWindow::closeButtonPressed()
 {
-    if (controller_.hasUnsavedChanges())
-    {
-        const auto saveResult = juce::AlertWindow::showOkCancelBox(
-            juce::AlertWindow::WarningIcon,
-            "Unsaved project changes",
-            "There are unsaved project changes. Quit anyway after saving project state?",
-            "Quit",
-            "Cancel");
-        if (!saveResult)
-        {
-            return;
-        }
-    }
-
-    if (!controller_.canCloseSafely())
-    {
-        const auto result = juce::AlertWindow::showOkCancelBox(
-            juce::AlertWindow::WarningIcon,
-            "Tasks are still running",
-            "There are active tasks in progress. Quit anyway after saving project state?",
-            "Quit",
-            "Cancel");
-        if (!result)
-        {
-            return;
-        }
-    }
-
     controller_.prepareForShutdown();
     juce::JUCEApplication::getInstance()->systemRequestedQuit();
 }
@@ -70,3 +42,6 @@ void MainWindow::timerCallback()
 }
 }
 #endif
+
+
+

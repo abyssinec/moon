@@ -1,4 +1,4 @@
-set(MOON_ENGINE_SOURCES
+﻿set(MOON_ENGINE_SOURCES
     src/ArrangementBackend.cpp
     src/EngineRuntimeCoordinator.cpp
     src/ProjectManager.cpp
@@ -15,9 +15,6 @@ set(MOON_ENGINE_SOURCES
     src/SettingsService.cpp
     src/FileHash.cpp
 )
-
-find_package(JUCE CONFIG QUIET)
-
 add_library(moon_engine STATIC ${MOON_ENGINE_SOURCES})
 target_include_directories(moon_engine PUBLIC include)
 
@@ -33,3 +30,4 @@ if (MOON_ENABLE_TRACKTION)
 else()
     target_compile_definitions(moon_engine PUBLIC MOON_HAS_TRACKTION=0)
 endif()
+

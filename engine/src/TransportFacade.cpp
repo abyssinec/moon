@@ -1,4 +1,4 @@
-#include "TransportFacade.h"
+﻿#include "TransportFacade.h"
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +49,42 @@ bool trackIsAudible(const ProjectState& state, const std::string& trackId)
         return trackIt->solo;
     }
     return !trackIt->mute;
+}
+
+const TrackInfo* findTrack(const ProjectState& state, const std::string& trackId)
+{
+    const auto trackIt = std::find_if(
+        state.tracks.begin(),
+        state.tracks.end(),
+        [&trackId](const TrackInfo& track)
+        {
+            return track.id == trackId;
+        });
+    return trackIt == state.tracks.end() ? nullptr : &(*trackIt);
+}
+
+double trackGainLinear(const ProjectState& state, const std::string& trackId)
+{
+    if (const auto* track = findTrack(state, trackId))
+    {
+        return std::pow(10.0, track->gainDb / 20.0);
+    }
+    return 1.0;
+}
+
+float applyTrackPan(const ProjectState& state, const std::string& trackId, int channel, float sample)
+{
+    const auto* track = findTrack(state, trackId);
+    if (track == nullptr)
+    {
+        return sample;
+    }
+
+    const auto pan = std::clamp(track->pan, -1.0, 1.0);
+    const auto panNorm = (pan + 1.0) * 0.5;
+    const auto leftGain = std::cos(panNorm * juce::MathConstants<double>::halfPi);
+    const auto rightGain = std::sin(panNorm * juce::MathConstants<double>::halfPi);
+    return sample * static_cast<float>(channel == 0 ? leftGain : rightGain);
 }
 
 double clipStartSec(const ClipInfo& clip)
@@ -275,7 +311,7 @@ struct ProjectMixSource final : public juce::PositionableAudioSource
             const auto sourceStartSample = static_cast<juce::int64>(std::floor(sourceLocalTime * reader->sampleRate));
 
             tempBuffer.setSize(
-                std::max(1, reader->numChannels),
+                std::max<int>(1, static_cast<int>(reader->numChannels)),
                 overlapSamples,
                 false,
                 false,
@@ -289,7 +325,9 @@ struct ProjectMixSource final : public juce::PositionableAudioSource
                 const auto timelineTime = overlapStart + (static_cast<double>(sampleIndex) / sampleRate);
                 const auto clipLocalTime = std::max(0.0, timelineTime - clip.startSec);
                 const auto envelope = static_cast<float>(
-                    clipEnvelope(clip, clipLocalTime) * overlapCrossfadeWeight(*state, clip, timelineTime));
+                    clipEnvelope(clip, clipLocalTime)
+                    * overlapCrossfadeWeight(*state, clip, timelineTime)
+                    * trackGainLinear(*state, clip.trackId));
                 if (envelope <= 0.0f)
                 {
                     continue;
@@ -304,7 +342,11 @@ struct ProjectMixSource final : public juce::PositionableAudioSource
                 for (int channel = 0; channel < totalChannels; ++channel)
                 {
                     const auto sourceChannel = std::min(channel, tempBuffer.getNumChannels() - 1);
-                    const auto sample = tempBuffer.getSample(sourceChannel, sampleIndex) * envelope;
+                    const auto sample = applyTrackPan(
+                        *state,
+                        clip.trackId,
+                        channel,
+                        tempBuffer.getSample(sourceChannel, sampleIndex) * envelope);
                     bufferToFill.buffer->addSample(channel, destinationSample, sample);
                 }
             }
@@ -420,15 +462,49 @@ private:
 struct TransportFacade::Impl
 {
 #if MOON_HAS_JUCE
+    juce::CriticalSection transportLock;
     juce::AudioFormatManager formatManager;
+    juce::TimeSliceThread readAheadThread{"MoonTransportReadAhead"};
     std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
     std::unique_ptr<ProjectMixSource> projectSource;
     juce::AudioTransportSource transportSource;
 
+    struct LockedTransportSource final : public juce::AudioSource
+    {
+        explicit LockedTransportSource(Impl& ownerIn)
+            : owner(ownerIn)
+        {
+        }
+
+        void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override
+        {
+            const juce::ScopedLock lock(owner.transportLock);
+            owner.transportSource.prepareToPlay(samplesPerBlockExpected, sampleRate);
+        }
+
+        void releaseResources() override
+        {
+            const juce::ScopedLock lock(owner.transportLock);
+            owner.transportSource.releaseResources();
+        }
+
+        void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override
+        {
+            const juce::ScopedLock lock(owner.transportLock);
+            owner.transportSource.getNextAudioBlock(bufferToFill);
+        }
+
+        Impl& owner;
+    };
+
+    std::unique_ptr<LockedTransportSource> lockedTransportSource;
+
     Impl()
     {
+        readAheadThread.startThread();
         formatManager.registerBasicFormats();
         projectSource = std::make_unique<ProjectMixSource>(formatManager);
+        lockedTransportSource = std::make_unique<LockedTransportSource>(*this);
     }
 #endif
 };
@@ -438,6 +514,8 @@ TransportFacade::TransportFacade(Logger& logger)
     , impl_(std::make_unique<Impl>())
 {
 }
+
+TransportFacade::~TransportFacade() = default;
 
 void TransportFacade::setPreferredBackend(TransportBackendMode mode)
 {
@@ -470,7 +548,10 @@ void TransportFacade::play()
     }
 
 #if MOON_HAS_JUCE
-    impl_->transportSource.start();
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        impl_->transportSource.start();
+    }
 #endif
     playing_ = true;
     logger_.info("Transport play");
@@ -479,7 +560,10 @@ void TransportFacade::play()
 void TransportFacade::pause()
 {
 #if MOON_HAS_JUCE
-    impl_->transportSource.stop();
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        impl_->transportSource.stop();
+    }
 #endif
     playing_ = false;
     logger_.info("Transport pause");
@@ -488,8 +572,11 @@ void TransportFacade::pause()
 void TransportFacade::stop()
 {
 #if MOON_HAS_JUCE
-    impl_->transportSource.stop();
-    impl_->transportSource.setPosition(0.0);
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        impl_->transportSource.stop();
+        impl_->transportSource.setPosition(0.0);
+    }
 #endif
     playing_ = false;
     playheadSec_ = 0.0;
@@ -500,7 +587,10 @@ void TransportFacade::seek(double timeSec)
 {
     playheadSec_ = std::clamp(timeSec, 0.0, sourceDurationSec_ > 0.0 ? sourceDurationSec_ : timeSec);
 #if MOON_HAS_JUCE
-    impl_->transportSource.setPosition(playheadSec_);
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        impl_->transportSource.setPosition(playheadSec_);
+    }
 #endif
     logger_.info("Transport seek " + std::to_string(playheadSec_));
 }
@@ -508,8 +598,11 @@ void TransportFacade::seek(double timeSec)
 void TransportFacade::tick(double deltaSec)
 {
 #if MOON_HAS_JUCE
-    playheadSec_ = impl_->transportSource.getCurrentPosition();
-    playing_ = impl_->transportSource.isPlaying();
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        playheadSec_ = impl_->transportSource.getCurrentPosition();
+        playing_ = impl_->transportSource.isPlaying();
+    }
     if (!playing_ && sourceDurationSec_ > 0.0 && playheadSec_ >= sourceDurationSec_)
     {
         playheadSec_ = sourceDurationSec_;
@@ -535,6 +628,8 @@ void TransportFacade::tick(double deltaSec)
 void TransportFacade::loadSource(std::string sourcePath, double durationSec)
 {
 #if MOON_HAS_JUCE
+    const juce::ScopedLock lock(impl_->transportLock);
+
     impl_->transportSource.stop();
     impl_->transportSource.setSource(nullptr);
     impl_->readerSource.reset();
@@ -559,11 +654,13 @@ void TransportFacade::loadSource(std::string sourcePath, double durationSec)
         return;
     }
 
+    const auto readerSampleRate = reader->sampleRate;
+
     sourcePath_ = std::move(sourcePath);
     sourceDurationSec_ = durationSec;
     playheadSec_ = std::min(playheadSec_, sourceDurationSec_);
     impl_->readerSource = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
-    impl_->transportSource.setSource(impl_->readerSource.get(), 32768, nullptr, impl_->readerSource->sampleRate);
+    impl_->transportSource.setSource(impl_->readerSource.get(), 32768, &impl_->readAheadThread, readerSampleRate);
     impl_->transportSource.setPosition(playheadSec_);
 #else
     sourcePath_ = std::move(sourcePath);
@@ -577,9 +674,12 @@ void TransportFacade::loadSource(std::string sourcePath, double durationSec)
 void TransportFacade::clearLoadedSource()
 {
 #if MOON_HAS_JUCE
-    impl_->transportSource.stop();
-    impl_->transportSource.setSource(nullptr);
-    impl_->readerSource.reset();
+    {
+        const juce::ScopedLock lock(impl_->transportLock);
+        impl_->transportSource.stop();
+        impl_->transportSource.setSource(nullptr);
+        impl_->readerSource.reset();
+    }
 #endif
     sourcePath_.clear();
     sourceDurationSec_ = 0.0;
@@ -603,6 +703,8 @@ void TransportFacade::setProjectState(const ProjectState* state)
 void TransportFacade::useProjectPlayback(bool enabled)
 {
 #if MOON_HAS_JUCE
+    const juce::ScopedLock lock(impl_->transportLock);
+
     if (enabled && usingProjectPlayback())
     {
         sourceDurationSec_ = impl_->projectSource->timelineDurationSeconds();
@@ -617,7 +719,7 @@ void TransportFacade::useProjectPlayback(bool enabled)
     {
         sourcePath_ = "__project__";
         sourceDurationSec_ = impl_->projectSource->timelineDurationSeconds();
-        impl_->transportSource.setSource(impl_->projectSource.get(), 32768, nullptr, impl_->projectSource->nominalSampleRate());
+        impl_->transportSource.setSource(impl_->projectSource.get(), 32768, &impl_->readAheadThread, impl_->projectSource->nominalSampleRate());
         impl_->transportSource.setPosition(playheadSec_);
         return;
     }
@@ -712,7 +814,12 @@ bool TransportFacade::usingProjectPlayback() const noexcept
 #if MOON_HAS_JUCE
 juce::AudioSource* TransportFacade::audioSource() noexcept
 {
-    return &impl_->transportSource;
+    return impl_->lockedTransportSource.get();
 }
 #endif
 }
+
+
+
+
+

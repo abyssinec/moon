@@ -1,4 +1,4 @@
-set(MOON_APP_SOURCES
+﻿set(MOON_APP_SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainComponent.cpp
@@ -12,11 +12,8 @@ set(MOON_APP_HEADERS
     include/AppController.h
     include/CommandIDs.h
 )
-
-find_package(JUCE CONFIG QUIET)
-
 if (JUCE_FOUND)
-    add_executable(moon_audio_editor ${MOON_APP_SOURCES} ${MOON_APP_HEADERS})
+    add_executable(moon_audio_editor WIN32 ${MOON_APP_SOURCES} ${MOON_APP_HEADERS})
     target_compile_definitions(moon_audio_editor PRIVATE MOON_HAS_JUCE=1)
     target_include_directories(moon_audio_editor PRIVATE include)
     target_link_libraries(moon_audio_editor
@@ -37,3 +34,5 @@ endif()
 install(TARGETS moon_audio_editor
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+

@@ -1,4 +1,4 @@
-#include "AIJobClient.h"
+﻿#include "AIJobClient.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -502,7 +502,7 @@ std::unordered_map<std::string, std::string> AIJobClient::extractJsonObjectStrin
     }
 
     const auto objectJson = json.substr(objectStart, objectEnd - objectStart + 1);
-    const std::regex pairExpr(R"("([^"]+)"\s*:\s*"([^"]*)")");
+    const std::regex pairExpr("\"([^\"]+)\"\\s*:\\s*\"([^\"]*)\"");
     for (std::sregex_iterator it(objectJson.begin(), objectJson.end(), pairExpr), end; it != end; ++it)
     {
         result.emplace((*it)[1].str(), (*it)[2].str());
@@ -559,3 +559,4 @@ void AIJobClient::markBackendFallback() const noexcept
     backendReachable_ = false;
 }
 }
+

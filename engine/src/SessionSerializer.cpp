@@ -1,4 +1,4 @@
-#include "SessionSerializer.h"
+﻿#include "SessionSerializer.h"
 
 #include <filesystem>
 #include <fstream>
@@ -60,7 +60,11 @@ bool SessionSerializer::save(const ProjectState& state, const std::filesystem::p
     for (std::size_t i = 0; i < state.tracks.size(); ++i)
     {
         const auto& track = state.tracks[i];
-        out << "    {\"id\": \"" << escape(track.id) << "\", \"name\": \"" << escape(track.name) << "\"}";
+        out << "    {\"id\": \"" << escape(track.id)
+            << "\", \"name\": \"" << escape(track.name)
+            << "\", \"gain_db\": " << track.gainDb
+            << ", \"pan\": " << track.pan
+            << "}";
         if (i + 1 < state.tracks.size())
         {
             out << ",";
@@ -141,17 +145,25 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     state.engineState.tracktionRuntimeReady = extractBool(content, "tracktion_runtime_ready", false);
 
     const auto tracksArray = extractArray(content, "tracks");
-    const std::regex trackExpr(R"(\{"id"\s*:\s*"([^"]+)",\s*"name"\s*:\s*"([^"]*)"\})");
+    const std::regex trackExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"name\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"gain_db\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?),\\s*\"pan\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?))?\\}");
     for (std::sregex_iterator it(tracksArray.begin(), tracksArray.end(), trackExpr), end; it != end; ++it)
     {
         TrackInfo track;
         track.id = (*it)[1].str();
         track.name = (*it)[2].str();
+        if ((*it)[3].matched)
+        {
+            track.gainDb = std::stod((*it)[3].str());
+        }
+        if ((*it)[4].matched)
+        {
+            track.pan = std::stod((*it)[4].str());
+        }
         state.tracks.push_back(track);
     }
 
     const auto clipsArray = extractArray(content, "clips");
-    const std::regex clipExpr(R"(\{"id"\s*:\s*"([^"]+)",\s*"track_id"\s*:\s*"([^"]+)",\s*"asset_id"\s*:\s*"([^"]+)",\s*"start_sec"\s*:\s*([0-9]+(?:\.[0-9]+)?),\s*"offset_sec"\s*:\s*([0-9]+(?:\.[0-9]+)?),\s*"duration_sec"\s*:\s*([0-9]+(?:\.[0-9]+)?),\s*"gain"\s*:\s*([0-9]+(?:\.[0-9]+)?)(?:,\s*"fade_in_sec"\s*:\s*([0-9]+(?:\.[0-9]+)?),\s*"fade_out_sec"\s*:\s*([0-9]+(?:\.[0-9]+)?),\s*"take_group_id"\s*:\s*"([^"]*)",\s*"active_take"\s*:\s*(true|false))?\})");
+    const std::regex clipExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"track_id\"\\s*:\\s*\"([^\"]+)\",\\s*\"asset_id\"\\s*:\\s*\"([^\"]+)\",\\s*\"start_sec\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?),\\s*\"offset_sec\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?),\\s*\"duration_sec\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?),\\s*\"gain\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)(?:,\\s*\"fade_in_sec\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?),\\s*\"fade_out_sec\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?),\\s*\"take_group_id\"\\s*:\\s*\"([^\"]*)\",\\s*\"active_take\"\\s*:\\s*(true|false))?\\}");
     for (std::sregex_iterator it(clipsArray.begin(), clipsArray.end(), clipExpr), end; it != end; ++it)
     {
         ClipInfo clip;
@@ -183,7 +195,7 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     }
 
     const auto sourcesArray = extractArray(content, "sources");
-    const std::regex assetExpr(R"(\{"id"\s*:\s*"([^"]+)",\s*"path"\s*:\s*"([^"]*)")");
+    const std::regex assetExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"path\"\\s*:\\s*\"([^\"]*)\"\\}");
     for (std::sregex_iterator it(sourcesArray.begin(), sourcesArray.end(), assetExpr), end; it != end; ++it)
     {
         AssetInfo asset;
@@ -194,7 +206,7 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     }
 
     const auto generatedArray = extractArray(content, "generated");
-    const std::regex generatedExpr(R"(\{"id"\s*:\s*"([^"]+)",\s*"path"\s*:\s*"([^"]*)",\s*"source_clip_id"\s*:\s*"([^"]*)",\s*"model"\s*:\s*"([^"]*)",\s*"prompt"\s*:\s*"([^"]*)",\s*"created_at"\s*:\s*"([^"]*)",\s*"cache_key"\s*:\s*"([^"]*)"\})");
+    const std::regex generatedExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"path\"\\s*:\\s*\"([^\"]*)\",\\s*\"source_clip_id\"\\s*:\\s*\"([^\"]*)\",\\s*\"model\"\\s*:\\s*\"([^\"]*)\",\\s*\"prompt\"\\s*:\\s*\"([^\"]*)\",\\s*\"created_at\"\\s*:\\s*\"([^\"]*)\",\\s*\"cache_key\"\\s*:\\s*\"([^\"]*)\"\\}");
     for (std::sregex_iterator it(generatedArray.begin(), generatedArray.end(), generatedExpr), end; it != end; ++it)
     {
         AssetInfo asset;
@@ -347,3 +359,4 @@ std::string SessionSerializer::extractArray(const std::string& content, const st
     return {};
 }
 }
+

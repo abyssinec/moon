@@ -18,7 +18,11 @@ public:
                  std::function<void()> playCallback,
                  std::function<void()> pauseCallback,
                  std::function<void()> stopCallback,
+                 std::function<void(double)> seekCallback,
+                 std::function<double()> durationProvider,
+                 std::function<double()> tempoProvider,
                  std::function<std::string()> statusProvider);
+    void paint(juce::Graphics& g) override;
     void resized() override;
     void refresh();
 
@@ -28,11 +32,17 @@ private:
     std::function<void()> playCallback_;
     std::function<void()> pauseCallback_;
     std::function<void()> stopCallback_;
+    std::function<void(double)> seekCallback_;
+    std::function<double()> durationProvider_;
+    std::function<double()> tempoProvider_;
     std::function<std::string()> statusProvider_;
+    bool refreshingPosition_{false};
     juce::TextButton playButton_{"Play"};
     juce::TextButton pauseButton_{"Pause"};
     juce::TextButton stopButton_{"Stop"};
     juce::ToggleButton loopToggle_{"Loop"};
+    juce::Slider positionSlider_;
+    juce::Label meterLabel_;
     juce::Label timeLabel_;
     juce::Label statusLabel_;
 };
@@ -43,7 +53,7 @@ namespace moon::ui
 class TransportBar
 {
 public:
-    TransportBar(moon::engine::TransportFacade&, moon::engine::Logger&, std::function<void()>, std::function<void()>, std::function<void()>, std::function<std::string()>) {}
+    TransportBar(moon::engine::TransportFacade&, moon::engine::Logger&, std::function<void()>, std::function<void()>, std::function<void()>, std::function<void(double)>, std::function<double()>, std::function<double()>, std::function<std::string()>) {}
 };
 }
 #endif

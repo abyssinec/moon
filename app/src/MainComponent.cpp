@@ -1,4 +1,4 @@
-#include "MainComponent.h"
+﻿#include "MainComponent.h"
 
 #if MOON_HAS_JUCE
 namespace moon::app
@@ -11,8 +11,26 @@ MainComponent::MainComponent(AppController& controller)
           [&controller]() { controller.playTransport(); },
           [&controller]() { controller.pauseTransport(); },
           [&controller]() { controller.stopTransport(); },
+          [&controller](double timelineSec)
+          {
+              controller.seekTimelinePlayhead(timelineSec);
+          },
+          [&controller]()
+          {
+              return controller.projectPlaybackDurationSec();
+          },
+          [&controller]()
+          {
+              return controller.projectTempo();
+          },
           [&controller]() { return controller.backendStatusSummary(); })
-    , trackListView_(controller.timeline(), controller.projectManager())
+    , trackListView_(
+          controller.timeline(),
+          controller.projectManager(),
+          [&controller]()
+          {
+              controller.notifyProjectMixChanged();
+          })
     , timelineView_(
           controller.timeline(),
           controller.projectManager(),
@@ -29,6 +47,30 @@ MainComponent::MainComponent(AppController& controller)
           [&controller](bool changed)
           {
               controller.finishInteractiveTimelineEdit(changed, true);
+          },
+          [&controller]
+          {
+              controller.splitSelectedClipAtPlayhead();
+          },
+          [&controller]
+          {
+              controller.deleteSelectedClip();
+          },
+          [&controller](double fadeSec)
+          {
+              return controller.setSelectedClipFadeIn(fadeSec);
+          },
+          [&controller](double fadeSec)
+          {
+              return controller.setSelectedClipFadeOut(fadeSec);
+          },
+          [&controller](double deltaSec)
+          {
+              return controller.trimSelectedClipLeft(deltaSec);
+          },
+          [&controller](double deltaSec)
+          {
+              return controller.trimSelectedClipRight(deltaSec);
           })
     , inspectorPanel_(
           controller.projectManager(),
@@ -139,31 +181,55 @@ MainComponent::MainComponent(AppController& controller)
     audioDeviceManager_.initialiseWithDefaultDevices(0, 2);
     audioDeviceManager_.addAudioCallback(audioSourcePlayer_.get());
 
-    addAndMakeVisible(newProjectButton_);
-    addAndMakeVisible(openProjectButton_);
-    addAndMakeVisible(saveProjectButton_);
-    addAndMakeVisible(importAudioButton_);
-    addAndMakeVisible(refreshBackendButton_);
-    addAndMakeVisible(rebuildPreviewButton_);
-    addAndMakeVisible(settingsButton_);
-    addAndMakeVisible(projectStatusLabel_);
-    addAndMakeVisible(exportMixButton_);
-    addAndMakeVisible(exportRegionButton_);
-    addAndMakeVisible(exportStemsButton_);
+    addAndMakeVisible(menuButton_);
     addAndMakeVisible(startupNoticeLabel_);
     addAndMakeVisible(dismissStartupNoticeButton_);
     addAndMakeVisible(transportBar_);
     addAndMakeVisible(trackListView_);
-    addAndMakeVisible(timelineView_);
-    addAndMakeVisible(inspectorPanel_);
-    addAndMakeVisible(taskPanel_);
+    timelineViewport_.setViewedComponent(&timelineView_, false);
+    timelineViewport_.setScrollBarsShown(true, true);
+    addAndMakeVisible(timelineViewport_);
+    inspectorViewport_.setViewedComponent(&inspectorPanel_, false);
+    inspectorViewport_.setScrollBarsShown(true, true);
+    addAndMakeVisible(inspectorViewport_);
+    taskViewport_.setViewedComponent(&taskPanel_, false);
+    taskViewport_.setScrollBarsShown(true, true);
+    addAndMakeVisible(taskViewport_);
 
+    auto styleToolbarButton = [](juce::TextButton& button)
+    {
+        button.setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(34, 37, 43));
+        button.setColour(juce::TextButton::buttonOnColourId, juce::Colour::fromRGB(43, 169, 237));
+        button.setColour(juce::TextButton::textColourOffId, juce::Colours::white.withAlpha(0.9f));
+        button.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    };
+    styleToolbarButton(menuButton_);
+    styleToolbarButton(newProjectButton_);
+    styleToolbarButton(openProjectButton_);
+    styleToolbarButton(saveProjectButton_);
+    styleToolbarButton(importAudioButton_);
+    styleToolbarButton(refreshBackendButton_);
+    styleToolbarButton(rebuildPreviewButton_);
+    styleToolbarButton(zoomOutButton_);
+    styleToolbarButton(zoomResetButton_);
+    styleToolbarButton(zoomInButton_);
+    styleToolbarButton(settingsButton_);
+    styleToolbarButton(exportMixButton_);
+    styleToolbarButton(exportRegionButton_);
+    styleToolbarButton(exportStemsButton_);
+    styleToolbarButton(dismissStartupNoticeButton_);
+    menuButton_.setButtonText("≡ Menu");
+
+    menuButton_.onClick = [this] { showMainMenu(); };
     newProjectButton_.onClick = [this] { createNewProject(); };
     openProjectButton_.onClick = [this] { openExistingProject(); };
     saveProjectButton_.onClick = [this] { saveCurrentProject(); };
     importAudioButton_.onClick = [this] { importAudioFile(); };
     refreshBackendButton_.onClick = [this] { refreshBackendConnection(); };
     rebuildPreviewButton_.onClick = [this] { rebuildPreviewCache(); };
+    zoomOutButton_.onClick = [this] { timelineView_.zoomOut(); };
+    zoomResetButton_.onClick = [this] { timelineView_.resetZoom(); };
+    zoomInButton_.onClick = [this] { timelineView_.zoomIn(); };
     settingsButton_.onClick = [this] { editSettings(); };
     exportMixButton_.onClick = [this] { exportFullMixFile(); };
     exportRegionButton_.onClick = [this] { exportSelectedRegionFile(); };
@@ -174,9 +240,9 @@ MainComponent::MainComponent(AppController& controller)
     startupNoticeLabel_.setInterceptsMouseClicks(false, false);
     startupNoticeLabel_.setText(controller_.startupNotice(), juce::dontSendNotification);
     projectStatusLabel_.setJustificationType(juce::Justification::centredRight);
-    projectStatusLabel_.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+    projectStatusLabel_.setColour(juce::Label::textColourId, juce::Colour::fromRGB(162, 168, 177));
     projectStatusLabel_.setInterceptsMouseClicks(false, false);
-    refreshProjectStatusLabel();
+    projectStatusLabel_.setVisible(false);
     dismissStartupNoticeButton_.onClick = [this]
     {
         controller_.clearStartupNotice();
@@ -187,7 +253,13 @@ MainComponent::MainComponent(AppController& controller)
     refreshActionAvailability();
     setWantsKeyboardFocus(true);
     grabKeyboardFocus();
-    startTimerHz(4);
+    lastTransportTickMs_ = juce::Time::getMillisecondCounterHiRes();
+    startTimerHz(60);
+}
+
+void MainComponent::paint(juce::Graphics& g)
+{
+    g.fillAll(juce::Colour::fromRGB(13, 15, 19));
 }
 
 MainComponent::~MainComponent()
@@ -202,7 +274,6 @@ MainComponent::~MainComponent()
 void MainComponent::resized()
 {
     auto area = getLocalBounds();
-    auto projectBar = area.removeFromTop(40);
     const auto startupNotice = controller_.startupNotice();
     const bool showStartupNotice = !startupNotice.empty();
     if (showStartupNotice)
@@ -219,27 +290,20 @@ void MainComponent::resized()
         startupNoticeLabel_.setVisible(false);
         dismissStartupNoticeButton_.setVisible(false);
     }
-    auto transport = area.removeFromTop(48);
-    auto taskArea = area.removeFromBottom(180);
-    auto inspector = area.removeFromRight(280);
-    auto tracks = area.removeFromLeft(180);
+    auto transport = area.removeFromTop(66);
+    auto taskArea = area.removeFromBottom(78);
+    auto inspector = area.removeFromRight(378);
+    auto tracks = area.removeFromLeft(198);
 
-    newProjectButton_.setBounds(projectBar.removeFromLeft(90).reduced(4));
-    openProjectButton_.setBounds(projectBar.removeFromLeft(90).reduced(4));
-    saveProjectButton_.setBounds(projectBar.removeFromLeft(90).reduced(4));
-    importAudioButton_.setBounds(projectBar.removeFromLeft(120).reduced(4));
-    refreshBackendButton_.setBounds(projectBar.removeFromLeft(150).reduced(4));
-    rebuildPreviewButton_.setBounds(projectBar.removeFromLeft(150).reduced(4));
-    settingsButton_.setBounds(projectBar.removeFromLeft(100).reduced(4));
-    exportMixButton_.setBounds(projectBar.removeFromLeft(120).reduced(4));
-    exportRegionButton_.setBounds(projectBar.removeFromLeft(140).reduced(4));
-    exportStemsButton_.setBounds(projectBar.removeFromLeft(130).reduced(4));
-    projectStatusLabel_.setBounds(projectBar.reduced(6, 4));
+    menuButton_.setBounds(transport.removeFromLeft(86).reduced(4));
     transportBar_.setBounds(transport.reduced(4));
     trackListView_.setBounds(tracks.reduced(4));
-    timelineView_.setBounds(area.reduced(4));
-    inspectorPanel_.setBounds(inspector.reduced(4));
-    taskPanel_.setBounds(taskArea.reduced(4));
+    timelineViewport_.setBounds(area.reduced(4));
+    timelineView_.updateContentSize();
+    inspectorViewport_.setBounds(inspector.reduced(4));
+    inspectorPanel_.setSize(juce::jmax(340, inspectorViewport_.getWidth() - 14), 1240);
+    taskViewport_.setBounds(taskArea.reduced(4));
+    taskPanel_.updateContentSize(juce::jmax(320, taskViewport_.getWidth() - 14));
 }
 
 bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
@@ -261,35 +325,33 @@ void MainComponent::filesDropped(const juce::StringArray& files, int, int)
         if (file.endsWithIgnoreCase(".wav"))
         {
             const auto logCount = controller_.logger().lineCount();
-            if (!controller_.importAudio(file.toStdString()))
+    if (!controller_.importAudio(file.toStdString()))
             {
                 showOperationFailure("Import WAV", "The dropped WAV file could not be imported.", logCount);
             }
         }
     }
 
+    timelineView_.updateContentSize();
     timelineView_.repaint();
     trackListView_.repaint();
 }
 
 void MainComponent::createNewProject()
 {
-    juce::FileChooser chooser("Choose project folder",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
-                              "*");
-    if (!chooser.browseForDirectory())
+    const auto root = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+        .getChildFile("MoonProject");
+    root.createDirectory();
+
+    const auto logCount = controller_.logger().lineCount();
+    if (!controller_.createProject("MoonProject", root.getFullPathName().toStdString()))
     {
+        showOperationFailure("New Project", "The default MoonProject folder could not be initialized.", logCount);
         return;
     }
 
-    const auto root = chooser.getResult();
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.createProject(root.getFileNameWithoutExtension().toStdString(), root.getFullPathName().toStdString()))
-    {
-        showOperationFailure("New Project", "The project folder could not be initialized.", logCount);
-        return;
-    }
     timelineView_.repaint();
+    timelineView_.updateContentSize();
     trackListView_.repaint();
     inspectorPanel_.repaint();
     taskPanel_.repaint();
@@ -297,24 +359,34 @@ void MainComponent::createNewProject()
 
 void MainComponent::openExistingProject()
 {
-    juce::FileChooser chooser("Open project JSON",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
-                              "*.json");
-    if (!chooser.browseForFileToOpen())
-    {
-        return;
-    }
+    activeFileChooser_ = std::make_unique<juce::FileChooser>(
+        "Open Project",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+        "*.json");
+    activeFileChooser_->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& chooser)
+        {
+            const auto result = chooser.getResult();
+            activeFileChooser_.reset();
+            if (!result.existsAsFile())
+            {
+                return;
+            }
 
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.openProject(chooser.getResult().getFullPathName().toStdString()))
-    {
-        showOperationFailure("Open Project", "The selected project file could not be opened.", logCount);
-        return;
-    }
-    timelineView_.repaint();
-    trackListView_.repaint();
-    inspectorPanel_.repaint();
-    taskPanel_.repaint();
+            const auto logCount = controller_.logger().lineCount();
+            if (!controller_.openProject(result.getFullPathName().toStdString()))
+            {
+                showOperationFailure("Open Project", "Selected project could not be opened.", logCount);
+                return;
+            }
+
+            timelineView_.updateContentSize();
+            timelineView_.repaint();
+            trackListView_.repaint();
+            inspectorPanel_.repaint();
+            taskPanel_.repaint();
+        });
 }
 
 void MainComponent::saveCurrentProject()
@@ -330,84 +402,119 @@ void MainComponent::saveCurrentProject()
 
 void MainComponent::importAudioFile()
 {
-    juce::FileChooser chooser("Import WAV file",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
-                              "*.wav");
-    if (!chooser.browseForFileToOpen())
-    {
-        return;
-    }
+    activeFileChooser_ = std::make_unique<juce::FileChooser>(
+        "Import WAV",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+        "*.wav");
+    activeFileChooser_->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& chooser)
+        {
+            const auto result = chooser.getResult();
+            activeFileChooser_.reset();
+            if (!result.existsAsFile())
+            {
+                return;
+            }
 
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.importAudio(chooser.getResult().getFullPathName().toStdString()))
-    {
-        showOperationFailure("Import WAV", "The selected WAV file could not be imported.", logCount);
-        return;
-    }
-    timelineView_.repaint();
-    trackListView_.repaint();
-    inspectorPanel_.repaint();
-    taskPanel_.repaint();
+            const auto logCount = controller_.logger().lineCount();
+            if (!controller_.importAudio(result.getFullPathName().toStdString()))
+            {
+                showOperationFailure("Import WAV", "The selected WAV file could not be imported.", logCount);
+                return;
+            }
+
+            timelineView_.updateContentSize();
+            timelineView_.repaint();
+            trackListView_.repaint();
+        });
 }
 
 void MainComponent::exportFullMixFile()
 {
-    juce::FileChooser chooser("Export mix WAV",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("mix_export.wav"),
-                              "*.wav");
-    if (!chooser.browseForFileToSave(true))
-    {
-        return;
-    }
+    activeFileChooser_ = std::make_unique<juce::FileChooser>(
+        "Export Mix",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("mix_export.wav"),
+        "*.wav");
+    activeFileChooser_->launchAsync(
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+        [this](const juce::FileChooser& chooser)
+        {
+            const auto output = chooser.getResult();
+            activeFileChooser_.reset();
+            if (output == juce::File())
+            {
+                return;
+            }
 
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.exportFullMix(chooser.getResult().getFullPathName().toStdString()))
-    {
-        showOperationFailure("Export Mix", "Mix export failed.", logCount);
-        return;
-    }
-    showOperationInfo("Export Mix", "Mix WAV exported successfully.");
-    taskPanel_.repaint();
+            const auto logCount = controller_.logger().lineCount();
+            if (!controller_.exportFullMix(output.getFullPathName().toStdString()))
+            {
+                showOperationFailure("Export Mix", "Mix export failed.", logCount);
+                return;
+            }
+
+            showOperationInfo("Export Mix", "Mix exported to: " + output.getFullPathName());
+            taskPanel_.repaint();
+        });
 }
 
 void MainComponent::exportSelectedRegionFile()
 {
-    juce::FileChooser chooser("Export selected region WAV",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("region_export.wav"),
-                              "*.wav");
-    if (!chooser.browseForFileToSave(true))
-    {
-        return;
-    }
+    activeFileChooser_ = std::make_unique<juce::FileChooser>(
+        "Export Selected Region",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("region_export.wav"),
+        "*.wav");
+    activeFileChooser_->launchAsync(
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+        [this](const juce::FileChooser& chooser)
+        {
+            const auto output = chooser.getResult();
+            activeFileChooser_.reset();
+            if (output == juce::File())
+            {
+                return;
+            }
 
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.exportSelectedRegion(chooser.getResult().getFullPathName().toStdString()))
-    {
-        showOperationFailure("Export Region", "Select a timeline region before exporting.", logCount);
-        return;
-    }
-    showOperationInfo("Export Region", "Selected region WAV exported successfully.");
-    taskPanel_.repaint();
+            const auto logCount = controller_.logger().lineCount();
+            if (!controller_.exportSelectedRegion(output.getFullPathName().toStdString()))
+            {
+                showOperationFailure("Export Region", "Select a timeline region before exporting.", logCount);
+                return;
+            }
+
+            showOperationInfo("Export Region", "Region exported to: " + output.getFullPathName());
+            taskPanel_.repaint();
+        });
 }
 
 void MainComponent::exportStemTracksFiles()
 {
-    juce::FileChooser chooser("Choose stem export folder",
-                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
-                              "*");
-    if (!chooser.browseForDirectory())
-    {
-        return;
-    }
+    activeFileChooser_ = std::make_unique<juce::FileChooser>(
+        "Export Stems Folder",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("MoonStemExports"));
+    activeFileChooser_->launchAsync(
+        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+        [this](const juce::FileChooser& chooser)
+        {
+            const auto outputDir = chooser.getResult();
+            activeFileChooser_.reset();
+            if (outputDir == juce::File())
+            {
+                return;
+            }
 
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.exportStemTracks(chooser.getResult().getFullPathName().toStdString()))
-    {
-        showOperationFailure("Export Stems", "No stem tracks are available to export.", logCount);
-        return;
-    }
-    showOperationInfo("Export Stems", "Stem WAV files exported successfully.");
-    taskPanel_.repaint();
+            outputDir.createDirectory();
+            const auto logCount = controller_.logger().lineCount();
+            if (!controller_.exportStemTracks(outputDir.getFullPathName().toStdString()))
+            {
+                showOperationFailure("Export Stems", "No stem tracks are available to export.", logCount);
+                return;
+            }
+
+            showOperationInfo("Export Stems", "Stem WAV files exported to: " + outputDir.getFullPathName());
+            taskPanel_.repaint();
+        });
 }
 
 void MainComponent::refreshBackendConnection()
@@ -449,31 +556,61 @@ void MainComponent::rebuildPreviewCache()
 
 void MainComponent::editSettings()
 {
-    auto settings = controller_.currentSettings();
+    showOperationInfo(
+        "App Settings",
+        "Settings editing is temporarily disabled in this JUCE compatibility build.");
+}
 
-    juce::AlertWindow window("App Settings", "Configure local app settings", juce::AlertWindow::NoIcon);
-    window.addTextEditor("backend_url", settings.backendUrl, "Backend URL");
-    window.addTextEditor("cache_directory", settings.cacheDirectory.string(), "Cache Directory");
-    window.addTextEditor("default_sample_rate", std::to_string(settings.defaultSampleRate), "Default Sample Rate");
-    window.addButton("Save", 1);
-    window.addButton("Cancel", 0);
+void MainComponent::showMainMenu()
+{
+    refreshActionAvailability();
 
-    if (window.runModalLoop() != 1)
-    {
-        return;
-    }
+    juce::PopupMenu menu;
+    menu.addSectionHeader("File");
+    menu.addItem(1, "New Project");
+    menu.addItem(2, "Open Project...");
+    menu.addItem(3, "Save Project");
+    menu.addItem(4, "Import WAV...");
 
-    settings.backendUrl = window.getTextEditor("backend_url")->getText().toStdString();
-    settings.cacheDirectory = window.getTextEditor("cache_directory")->getText().toStdString();
-    settings.defaultSampleRate = window.getTextEditor("default_sample_rate")->getText().getIntValue();
-    const auto logCount = controller_.logger().lineCount();
-    if (!controller_.saveSettings(settings))
-    {
-        showOperationFailure("App Settings", "Settings could not be saved.", logCount);
-        return;
-    }
-    showOperationInfo("App Settings", "Settings saved. Restart the app to fully apply backend URL changes.");
-    taskPanel_.repaint();
+    menu.addSectionHeader("View");
+    menu.addItem(10, "Zoom Out");
+    menu.addItem(11, "Zoom Reset");
+    menu.addItem(12, "Zoom In");
+
+    menu.addSectionHeader("Backend");
+    menu.addItem(20, "Refresh Backend");
+    menu.addItem(21, "Rebuild Preview", rebuildPreviewButton_.isEnabled());
+
+    menu.addSectionHeader("Export");
+    menu.addItem(30, "Export Mix...", exportMixButton_.isEnabled());
+    menu.addItem(31, "Export Region...", exportRegionButton_.isEnabled());
+    menu.addItem(32, "Export Stems...", exportStemsButton_.isEnabled());
+
+    menu.addSectionHeader("App");
+    menu.addItem(40, "Settings");
+
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(menuButton_),
+        [this](int result)
+        {
+            switch (result)
+            {
+            case 1: createNewProject(); break;
+            case 2: openExistingProject(); break;
+            case 3: saveCurrentProject(); break;
+            case 4: importAudioFile(); break;
+            case 10: timelineView_.zoomOut(); break;
+            case 11: timelineView_.resetZoom(); break;
+            case 12: timelineView_.zoomIn(); break;
+            case 20: refreshBackendConnection(); break;
+            case 21: rebuildPreviewCache(); break;
+            case 30: exportFullMixFile(); break;
+            case 31: exportSelectedRegionFile(); break;
+            case 32: exportStemTracksFiles(); break;
+            case 40: editSettings(); break;
+            default: break;
+            }
+        });
 }
 
 void MainComponent::refreshActionAvailability()
@@ -496,7 +633,7 @@ void MainComponent::refreshActionAvailability()
     exportMixButton_.setEnabled(hasClips);
     exportRegionButton_.setEnabled(hasRegion);
     exportStemsButton_.setEnabled(hasStemTracks);
-    rebuildPreviewButton_.setEnabled(hasClips && !controller_.transport().canUseProjectPlayback());
+    rebuildPreviewButton_.setEnabled(hasClips);
 }
 
 void MainComponent::refreshProjectStatusLabel()
@@ -507,26 +644,19 @@ void MainComponent::refreshProjectStatusLabel()
     text += " | ";
     text += juce::String(state.sampleRate);
     text += " Hz";
-    text += " | Tracks: ";
+    text += " | ";
     text += juce::String(static_cast<int>(state.tracks.size()));
-    text += " | Clips: ";
+    text += " tracks";
+    text += " | ";
     text += juce::String(static_cast<int>(state.clips.size()));
-    text += " | Timeline: ";
-    text += juce::String(state.engineState.timelineBackend);
-    text += " | Transport: ";
-    text += juce::String(state.engineState.transportBackend);
-    text += " | Sync: ";
-    text += juce::String(state.engineState.tracktionSyncState);
-    if (!state.engineState.tracktionSyncReason.empty())
-    {
-        text += " | Reason: ";
-        text += juce::String(state.engineState.tracktionSyncReason);
-    }
+    text += " clips";
+    text += " | ";
+    text += juce::String(controller_.transport().playbackRouteSummary());
 
     if (const auto projectFile = controller_.projectFilePath(); projectFile.has_value())
     {
         text += " | ";
-        text += juce::String(*projectFile);
+        text += juce::File(*projectFile).getFileName();
     }
 
     projectStatusLabel_.setText(text, juce::dontSendNotification);
@@ -560,23 +690,42 @@ void MainComponent::timerCallback()
     {
         resized();
     }
-    controller_.transport().tick(0.25);
+
+    const auto nowMs = juce::Time::getMillisecondCounterHiRes();
+    const auto deltaSec = juce::jlimit(1.0 / 240.0, 0.05, (nowMs - lastTransportTickMs_) / 1000.0);
+    lastTransportTickMs_ = nowMs;
+
+    controller_.transport().tick(deltaSec);
+    controller_.refreshPlaybackUiState();
     controller_.maintainPreviewPlayback();
-    controller_.syncTransportToSelection();
-    controller_.pollTasks();
+    ++taskPollTickCounter_;
     ++autosaveTickCounter_;
-    if (autosaveTickCounter_ >= 40)
+
+    const bool shouldPollTasks = taskPollTickCounter_ >= 16;
+    if (shouldPollTasks)
+    {
+        taskPollTickCounter_ = 0;
+        controller_.pollTasks();
+    }
+
+    if (autosaveTickCounter_ >= 600)
     {
         autosaveTickCounter_ = 0;
         controller_.autosaveIfNeeded();
     }
-    refreshActionAvailability();
-    refreshProjectStatusLabel();
+
     transportBar_.refresh();
+    taskPanel_.updateContentSize(juce::jmax(320, taskViewport_.getWidth() - 14));
     timelineView_.repaint();
-    trackListView_.repaint();
-    inspectorPanel_.repaint();
-    taskPanel_.repaint();
+
+    if (shouldPollTasks)
+    {
+        refreshActionAvailability();
+        refreshProjectStatusLabel();
+        trackListView_.repaint();
+        inspectorPanel_.repaint();
+        taskPanel_.repaint();
+    }
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -644,6 +793,21 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
             taskPanel_.repaint();
             return true;
         }
+        if (text == '=' || text == '+')
+        {
+            timelineView_.zoomIn();
+            return true;
+        }
+        if (text == '-' || text == '_')
+        {
+            timelineView_.zoomOut();
+            return true;
+        }
+        if (text == '0')
+        {
+            timelineView_.resetZoom();
+            return true;
+        }
     }
 
     if (key == juce::KeyPress::leftKey)
@@ -691,3 +855,8 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 }
 }
 #endif
+
+
+
+
+

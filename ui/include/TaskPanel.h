@@ -14,6 +14,7 @@ public:
     TaskPanel(moon::engine::TaskManager& taskManager, moon::engine::Logger& logger);
     void paint(juce::Graphics& g) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    void updateContentSize(int availableWidth);
 
 private:
     moon::engine::TaskManager& taskManager_;

@@ -137,6 +137,8 @@ Expected:
 - track headers let you toggle `M` and `S`, and export/playback state follows those toggles
 - when JUCE playback is available and project WAV assets match the live mix path requirements, `Play` now drives a live project mix source for the whole arrangement; cached preview remains the fallback path
 - timeline scrubbing and playhead seeking now follow whole-project playback by default instead of jumping back to only the selected clip
+- transport bar now includes a position scrubber tied to project playback duration instead of only a passive time label
+- timeline navigation now supports viewport-based horizontal scrolling plus zoom controls/buttons and Ctrl+wheel zoom
 - `Left`/`Right` nudge the playhead by `0.1s`, `Shift+Left`/`Shift+Right` by `1.0s`, `Home` seeks to zero, and `Escape` clears the selected region
 - transport status explicitly shows whether the app is talking to the live localhost backend or using stub fallback
 - startup shows a notice when the app restored from autosave or had to start in backend fallback mode
@@ -147,6 +149,7 @@ Expected:
 - when transport is idle, the app now tries to auto-refresh stale project preview state in the background before the next playback
 - the native window title now shows the current project name and a `*` marker when there are unsaved edits
 - toolbar and inspector actions now enable only when their required clip/region/project state is available
+- inspector hosting is now scrollable, so the full AI/edit control set remains reachable at normal window sizes
 - the top bar now shows a live project summary with name, sample rate, track/clip counts, and current project path
 - transport status now also surfaces the current timeline/transport backend seam and any live-playback disable reason when cached preview is being used
 - project/session state now also preserves engine integration metadata for timeline backend, transport backend, and Tracktion sync/fallback status across save/reopen
@@ -155,6 +158,7 @@ Expected:
 - runtime transport sync now flows back into persisted engine integration state, so Tracktion seam status is updated during play/pause/seek/rebuild/fallback transitions instead of only at project open/save time
 - transport now clears stale selected-source state after destructive edits or vanished selection targets, so fallback transitions do not keep an invalid loaded source alive
 - if live/cached preview preparation fails, the app now drops invalid preview route state and reports a clean no-source fallback instead of pretending an old preview source is still usable
+- project playback now prefers a cached project preview mix as the stable main route, so clip gain/fade/mute/solo/crossfade changes are heard at the project level instead of relying on raw selected-source playback
 - transport route changes between `project-live`, `project-cached-preview`, `selected-source`, and `no-source` are now logged explicitly, so fallback transitions are easier to diagnose during QA
 - closing the app autosaves, saves the project, and warns before quitting if tasks are still running or unsaved edits remain
 - startup can restore from `autosave.project.json` for the default workspace project

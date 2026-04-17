@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <functional>
@@ -27,6 +27,7 @@ class TransportFacade
 {
 public:
     explicit TransportFacade(Logger& logger);
+    ~TransportFacade();
 
     void play();
     void pause();
@@ -69,3 +70,5 @@ private:
     std::string sourcePath_;
 };
 }
+
+

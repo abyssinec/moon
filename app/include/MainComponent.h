@@ -20,6 +20,7 @@ class MainComponent final : public juce::Component, public juce::FileDragAndDrop
 public:
     explicit MainComponent(AppController& controller);
     ~MainComponent() override;
+    void paint(juce::Graphics& g) override;
     void resized() override;
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void filesDropped(const juce::StringArray& files, int x, int y) override;
@@ -35,6 +36,7 @@ private:
     void refreshBackendConnection();
     void rebuildPreviewCache();
     void editSettings();
+    void showMainMenu();
     void refreshActionAvailability();
     void refreshProjectStatusLabel();
     void showOperationFailure(const juce::String& title, const juce::String& fallbackMessage, std::size_t previousLogCount);
@@ -45,12 +47,16 @@ private:
     AppController& controller_;
     juce::AudioDeviceManager audioDeviceManager_;
     std::unique_ptr<juce::AudioSourcePlayer> audioSourcePlayer_;
+    juce::TextButton menuButton_{"Menu"};
     juce::TextButton newProjectButton_{"New"};
     juce::TextButton openProjectButton_{"Open"};
     juce::TextButton saveProjectButton_{"Save"};
     juce::TextButton importAudioButton_{"Import WAV"};
     juce::TextButton refreshBackendButton_{"Refresh Backend"};
     juce::TextButton rebuildPreviewButton_{"Rebuild Preview"};
+    juce::TextButton zoomOutButton_{"Zoom -"};
+    juce::TextButton zoomResetButton_{"Zoom 1:1"};
+    juce::TextButton zoomInButton_{"Zoom +"};
     juce::TextButton settingsButton_{"Settings"};
     juce::Label projectStatusLabel_;
     juce::TextButton exportMixButton_{"Export Mix"};
@@ -59,11 +65,17 @@ private:
     juce::Label startupNoticeLabel_;
     juce::TextButton dismissStartupNoticeButton_{"Dismiss"};
     int autosaveTickCounter_{0};
+    int taskPollTickCounter_{0};
+    double lastTransportTickMs_{0.0};
     moon::ui::TransportBar transportBar_;
     moon::ui::TrackListView trackListView_;
+    juce::Viewport timelineViewport_;
     moon::ui::TimelineView timelineView_;
+    juce::Viewport inspectorViewport_;
     moon::ui::InspectorPanel inspectorPanel_;
+    juce::Viewport taskViewport_;
     moon::ui::TaskPanel taskPanel_;
+    std::unique_ptr<juce::FileChooser> activeFileChooser_;
 };
 }
 #else

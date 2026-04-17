@@ -52,7 +52,9 @@ double WaveformService::durationFor(const std::string& path)
 WaveformData WaveformService::loadWavData(const std::string& path)
 {
     WaveformData result;
-    result.peaks.assign(64, 0.0f);
+    result.peaks.assign(4096, 0.0f);
+    result.mins.assign(4096, 1.0f);
+    result.maxs.assign(4096, -1.0f);
 
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -124,14 +126,30 @@ WaveformData WaveformService::loadWavData(const std::string& path)
     for (std::uint32_t frame = 0; frame < frameCount; ++frame)
     {
         float maxValue = 0.0f;
+        float maxSigned = -1.0f;
+        float minSigned = 1.0f;
         for (std::uint16_t channel = 0; channel < channels; ++channel)
         {
             const auto sample = samples[frame * channels + channel];
-            maxValue = std::max(maxValue, std::abs(static_cast<float>(sample) / 32768.0f));
+            const auto normalized = static_cast<float>(sample) / 32768.0f;
+            maxValue = std::max(maxValue, std::abs(normalized));
+            maxSigned = std::max(maxSigned, normalized);
+            minSigned = std::min(minSigned, normalized);
         }
 
         const auto bucket = std::min<std::size_t>(bucketCount - 1, (static_cast<std::size_t>(frame) * bucketCount) / std::max<std::uint32_t>(1, frameCount));
         result.peaks[bucket] = std::max(result.peaks[bucket], maxValue);
+        result.maxs[bucket] = std::max(result.maxs[bucket], maxSigned);
+        result.mins[bucket] = std::min(result.mins[bucket], minSigned);
+    }
+
+    for (std::size_t bucket = 0; bucket < bucketCount; ++bucket)
+    {
+        if (result.maxs[bucket] < result.mins[bucket])
+        {
+            result.maxs[bucket] = 0.0f;
+            result.mins[bucket] = 0.0f;
+        }
     }
 
     return result;

@@ -1,4 +1,4 @@
-#include "AppController.h"
+﻿#include "AppController.h"
 
 #include <algorithm>
 #include <cmath>
@@ -70,26 +70,20 @@ AppController::AppController()
 bool AppController::startup()
 {
     logger_->info("AppController startup");
-    backendHealth_ = aiJobClient_->healthCheck();
-    backendModels_ = aiJobClient_->models();
-    logger_->info("Backend health status: " + backendHealth_.status);
-    backendFallbackNoticeActive_ = !aiJobClient_->backendReachable();
+
+    // Fast-start path: do not block the UI on backend probing.
+    backendFallbackNoticeActive_ = false;
     autosaveRecoveryNoticeActive_ = false;
     refreshStartupNoticeState();
+
     if (!projectManager_->projectFilePath().has_value())
     {
         const auto defaultRoot = (std::filesystem::current_path() / "workspace_project").string();
         createProject("Untitled Project", defaultRoot);
         logger_->info("Created default startup project at " + defaultRoot);
-        if (projectManager_->hasAutosave())
-        {
-            if (restoreAutosave(defaultRoot))
-            {
-                autosaveRecoveryNoticeActive_ = true;
-                refreshStartupNoticeState();
-            }
-        }
     }
+
+    logger_->info("Startup completed without blocking backend probe");
     return true;
 }
 
@@ -193,17 +187,27 @@ bool AppController::importAudio(const std::string& audioPath)
     }
 
     auto& state = projectManager_->state();
+    const bool wasEmptyProject = state.clips.empty();
+    const auto waveform = waveformService_->requestWaveform(audioPath);
+    if (wasEmptyProject && waveform.sampleRate > 0)
+    {
+        state.sampleRate = waveform.sampleRate;
+        logger_->info("Adjusted project sample rate to imported WAV sample rate: " + std::to_string(state.sampleRate));
+    }
+
     if (state.tracks.empty())
     {
         timeline_->ensureTrack(state, "Track 1");
     }
 
-    const auto durationSec = std::max(0.1, waveformService_->durationFor(audioPath));
+    const auto durationSec = std::max(0.1, waveform.durationSec);
     const auto clipId = timeline_->insertAudioClip(state, state.tracks.front().id, audioPath, 0.0, durationSec);
+    timeline_->selectClip(state, clipId);
+    state.uiState.selectedTrackId = state.tracks.front().id;
+    state.uiState.playheadSec = 0.0;
     markPreviewPlaybackDirty();
     markProjectDirty();
-    syncTransportToSelection();
-    logger_->info("Imported audio clip: " + clipId);
+    logger_->info("Imported audio clip into project playback path: " + clipId);
     return true;
 }
 
@@ -214,34 +218,27 @@ std::optional<std::string> AppController::projectFilePath() const
 
 std::string AppController::backendStatusSummary() const
 {
-    std::string summary = aiJobClient_->backendReachable() ? "Backend: live" : "Backend: stub fallback";
-    summary += " | health=" + backendHealth_.status;
-    if (!backendModels_.stems.empty())
+    std::string summary = aiJobClient_->backendReachable() ? "Backend live" : "Backend fallback";
+    const auto route = transport_->playbackRouteSummary();
+    if (route == "project-live")
     {
-        summary += " | stems=" + backendModels_.stems.front();
+        summary += " | live";
     }
-    if (!backendModels_.rewrite.empty())
+    else if (route == "project-cached-preview")
     {
-        summary += " | rewrite=" + backendModels_.rewrite.front();
-    }
-    if (!backendModels_.addLayer.empty())
-    {
-        summary += " | add-layer=" + backendModels_.addLayer.front();
-    }
-    if (transport_->canUseProjectPlayback())
-    {
-        summary += " | preview=live";
+        summary += previewPlaybackDirty_ ? " | stale preview" : " | cached preview";
     }
     else
     {
-        summary += previewPlaybackDirty_ ? " | preview=stale" : " | preview=fresh";
-        summary += " | live-disabled=" + transport_->projectPlaybackDiagnostic();
+        summary += previewPlaybackDirty_ ? " | stale" : " | " + route;
     }
-    summary += " | timeline=" + timeline_->backendSummary();
-    summary += " | transport=" + transport_->backendSummary();
-    summary += " | sync=" + projectManager_->state().engineState.tracktionSyncState;
-    summary += " | route=" + transport_->playbackRouteSummary();
-    summary += " | url=" + aiJobClient_->backendUrl();
+
+    const auto diagnostic = transport_->projectPlaybackDiagnostic();
+    if (!diagnostic.empty() && diagnostic != "ok")
+    {
+        summary += " | " + diagnostic;
+    }
+
     return summary;
 }
 
@@ -502,7 +499,7 @@ void AppController::beginInteractiveTimelineEdit()
     interactiveTimelineEditActive_ = true;
     interactiveTimelineEditWasPlaying_ = transport_->isPlaying();
     interactiveTimelineEditPlayheadSec_ = currentTimelinePlayheadSec();
-    if (interactiveTimelineEditWasPlaying_)
+    if (interactiveTimelineEditWasPlaying_ && !shouldUseProjectPreview())
     {
         transport_->pause();
         previewPlaybackActive_ = false;
@@ -522,14 +519,17 @@ void AppController::finishInteractiveTimelineEdit(bool changed, bool syncTranspo
     {
         markPreviewPlaybackDirty();
         markProjectDirty();
-        if (syncTransportToSelectionAfterEdit)
+        if (syncTransportToSelectionAfterEdit && !interactiveTimelineEditWasPlaying_)
         {
             syncTransportToSelection();
         }
         saveProject();
     }
 
-    restorePlaybackAfterTimelineEdit(interactiveTimelineEditWasPlaying_, interactiveTimelineEditPlayheadSec_);
+    if (interactiveTimelineEditWasPlaying_ || changed)
+    {
+        restorePlaybackAfterTimelineEdit(interactiveTimelineEditWasPlaying_, interactiveTimelineEditPlayheadSec_);
+    }
     interactiveTimelineEditWasPlaying_ = false;
     interactiveTimelineEditPlayheadSec_ = 0.0;
 }
@@ -561,28 +561,15 @@ bool AppController::toggleTrackSolo(const std::string& trackId)
 void AppController::playTransport()
 {
     runtimeCoordinator_->noteTransportOperation(*projectManager_, "play");
-    if (transport_->canUseProjectPlayback() && shouldUseProjectPreview())
-    {
-        transport_->useProjectPlayback(true);
-        auto& state = projectManager_->state();
-        transport_->seek(std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec() > 0.0 ? transport_->sourceDurationSec() : state.uiState.playheadSec));
-        transport_->play();
-        previewPlaybackActive_ = true;
-        state.uiState.playheadSec = transport_->playheadSec();
-        syncEngineIntegrationState("live project playback active");
-        logger_->info("Started realtime project playback");
-        return;
-    }
-
-    if (shouldUseProjectPreview() && preparePreviewPlayback())
+    if (shouldUseProjectPreview() && ensureProjectPlaybackRoute())
     {
         auto& state = projectManager_->state();
         transport_->seek(std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec()));
         transport_->play();
-        previewPlaybackActive_ = true;
+        previewPlaybackActive_ = !transport_->usingProjectPlayback();
         state.uiState.playheadSec = transport_->playheadSec();
-        syncEngineIntegrationState("cached preview playback active");
-        logger_->info("Started project preview playback");
+        syncEngineIntegrationState(transport_->usingProjectPlayback() ? "live project playback active" : "cached project playback active");
+        logger_->info(transport_->usingProjectPlayback() ? "Started live project playback" : "Started cached project playback");
         return;
     }
 
@@ -602,10 +589,7 @@ void AppController::pauseTransport()
 {
     runtimeCoordinator_->noteTransportOperation(*projectManager_, "pause");
     transport_->pause();
-    if (previewPlaybackActive_)
-    {
-        projectManager_->state().uiState.playheadSec = transport_->playheadSec();
-    }
+    projectManager_->state().uiState.playheadSec = transport_->playheadSec();
     syncEngineIntegrationState("transport paused");
 }
 
@@ -615,8 +599,15 @@ void AppController::stopTransport()
     transport_->stop();
     auto& state = projectManager_->state();
     previewPlaybackActive_ = false;
-    syncTransportToSelection();
     state.uiState.playheadSec = 0.0;
+    if (shouldUseProjectPreview() && ensureProjectPlaybackRoute())
+    {
+        transport_->seek(0.0);
+        syncEngineIntegrationState("transport stopped on project playback");
+        return;
+    }
+
+    syncTransportToSelection();
     syncEngineIntegrationState("transport stopped");
 }
 
@@ -674,24 +665,18 @@ void AppController::syncTransportToSelection()
 
     if (shouldUseProjectPreview())
     {
-        if (transport_->canUseProjectPlayback())
+        if (ensureProjectPlaybackRoute())
         {
-            runtimeCoordinator_->noteTransportOperation(*projectManager_, "sync-live-project");
-            transport_->useProjectPlayback(true);
-            state.uiState.playheadSec = transport_->playheadSec();
-            syncEngineIntegrationState("sync via live project playback");
-            return;
-        }
-        if (preparePreviewPlayback())
-        {
-            runtimeCoordinator_->noteTransportOperation(*projectManager_, "sync-cached-preview");
+            runtimeCoordinator_->noteTransportOperation(
+                *projectManager_,
+                transport_->usingProjectPlayback() ? "sync-live-project" : "sync-cached-preview");
             const auto timelineSec = std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec());
             if (std::abs(transport_->playheadSec() - timelineSec) > 0.05)
             {
                 transport_->seek(timelineSec);
             }
             state.uiState.playheadSec = transport_->playheadSec();
-            syncEngineIntegrationState("sync via cached preview playback");
+            syncEngineIntegrationState(transport_->usingProjectPlayback() ? "sync via live project playback" : "sync via cached project playback");
             return;
         }
     }
@@ -756,20 +741,16 @@ void AppController::seekTimelinePlayhead(double timelineSec)
 
     if (previewPlaybackActive_ || shouldUseProjectPreview())
     {
-        if (transport_->canUseProjectPlayback() && shouldUseProjectPreview())
+        if (shouldUseProjectPreview() && !previewPlaybackActive_)
         {
-            transport_->useProjectPlayback(true);
-        }
-        else if (shouldUseProjectPreview() && !previewPlaybackActive_)
-        {
-            preparePreviewPlayback();
+            ensureProjectPlaybackRoute();
         }
 
-        if (transport_->sourceDurationSec() > 0.0)
+        if (transport_->sourceDurationSec() > 0.0 || transport_->usingProjectPlayback())
         {
             transport_->seek(std::clamp(clampedTimelineSec, 0.0, transport_->sourceDurationSec()));
             state.uiState.playheadSec = transport_->playheadSec();
-            syncEngineIntegrationState("timeline seek via project playback");
+            syncEngineIntegrationState(transport_->usingProjectPlayback() ? "timeline seek via live project playback" : "timeline seek via cached project playback");
             return;
         }
     }
@@ -865,11 +846,12 @@ void AppController::maintainPreviewPlayback()
         return;
     }
 
-    if (transport_->canUseProjectPlayback())
+    if (shouldUseLiveProjectPlayback())
     {
-        runtimeCoordinator_->noteTransportOperation(*projectManager_, "idle-live-project");
-        transport_->useProjectPlayback(true);
-        syncEngineIntegrationState("idle live project playback ready");
+        if (!transport_->usingProjectPlayback())
+        {
+            ensureProjectPlaybackRoute();
+        }
         return;
     }
 
@@ -889,6 +871,43 @@ void AppController::maintainPreviewPlayback()
     transport_->seek(std::clamp(currentPlayhead, 0.0, transport_->sourceDurationSec()));
     projectManager_->state().uiState.playheadSec = transport_->playheadSec();
     syncEngineIntegrationState("idle cached preview refreshed");
+}
+
+void AppController::notifyProjectMixChanged()
+{
+    markPreviewPlaybackDirty();
+    markProjectDirty();
+    if (!transport_->isPlaying())
+    {
+        syncTransportToSelection();
+    }
+    syncEngineIntegrationState("project mix changed");
+}
+
+void AppController::refreshPlaybackUiState()
+{
+    auto& state = projectManager_->state();
+    if (!transport_->isPlaying())
+    {
+        return;
+    }
+
+    if (transport_->usingProjectPlayback() || previewPlaybackActive_ || shouldUseProjectPreview())
+    {
+        state.uiState.playheadSec = transport_->playheadSec();
+        return;
+    }
+
+    for (const auto& clip : state.clips)
+    {
+        if (clip.id == state.uiState.selectedClipId)
+        {
+            state.uiState.playheadSec = clip.startSec + transport_->playheadSec();
+            return;
+        }
+    }
+
+    state.uiState.playheadSec = transport_->playheadSec();
 }
 
 std::string AppController::windowTitle() const
@@ -935,9 +954,10 @@ bool AppController::finalizeTimelineEdit(const std::function<bool()>& editOperat
                                          const std::string& failureWarning,
                                          const std::string& operationName)
 {
+    const bool usingProjectRoute = shouldUseProjectPreview();
     const auto wasPlaying = transport_->isPlaying();
     const auto timelinePlayheadSec = currentTimelinePlayheadSec();
-    if (wasPlaying)
+    if (wasPlaying && !usingProjectRoute)
     {
         transport_->pause();
         previewPlaybackActive_ = false;
@@ -960,12 +980,19 @@ bool AppController::finalizeTimelineEdit(const std::function<bool()>& editOperat
     runtimeCoordinator_->noteTimelineOperation(*projectManager_, operationName);
     markPreviewPlaybackDirty();
     markProjectDirty();
-    if (syncTransportToSelectionAfterEdit)
+    if (syncTransportToSelectionAfterEdit && !wasPlaying)
+    {
+        syncTransportToSelection();
+    }
+    else if (!shouldUseProjectPreview())
     {
         syncTransportToSelection();
     }
     saveProject();
-    restorePlaybackAfterTimelineEdit(wasPlaying, timelinePlayheadSec);
+    if (wasPlaying || syncTransportToSelectionAfterEdit)
+    {
+        restorePlaybackAfterTimelineEdit(wasPlaying, timelinePlayheadSec);
+    }
     return true;
 }
 
@@ -976,16 +1003,33 @@ void AppController::restorePlaybackAfterTimelineEdit(bool wasPlaying, double tim
 
     if (shouldUseProjectPreview())
     {
-        if (transport_->canUseProjectPlayback())
+        if (shouldUseLiveProjectPlayback())
         {
-            transport_->useProjectPlayback(true);
-            transport_->seek(std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec()));
-            state.uiState.playheadSec = transport_->playheadSec();
-            if (wasPlaying)
+            if (ensureProjectPlaybackRoute())
             {
-                transport_->play();
-                previewPlaybackActive_ = true;
+                if (!wasPlaying)
+                {
+                    transport_->seek(std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec()));
+                    state.uiState.playheadSec = transport_->playheadSec();
+                }
+                else
+                {
+                    state.uiState.playheadSec = transport_->playheadSec();
+                }
+
+                if (wasPlaying && !transport_->isPlaying())
+                {
+                    transport_->play();
+                }
+                syncEngineIntegrationState("live project playback updated after edit");
+                return;
             }
+        }
+
+        if (wasPlaying)
+        {
+            previewPlaybackActive_ = true;
+            syncEngineIntegrationState("project playback marked stale after edit");
             return;
         }
 
@@ -993,11 +1037,6 @@ void AppController::restorePlaybackAfterTimelineEdit(bool wasPlaying, double tim
         {
             transport_->seek(std::clamp(state.uiState.playheadSec, 0.0, transport_->sourceDurationSec()));
             state.uiState.playheadSec = transport_->playheadSec();
-            if (wasPlaying)
-            {
-                transport_->play();
-                previewPlaybackActive_ = true;
-            }
             return;
         }
     }
@@ -1026,11 +1065,42 @@ bool AppController::shouldUseProjectPreview() const
     return !state.clips.empty();
 }
 
+bool AppController::shouldUseLiveProjectPlayback() const
+{
+    return shouldUseProjectPreview()
+        && transport_->supportsProjectPlayback()
+        && transport_->canUseProjectPlayback();
+}
+
+bool AppController::ensureProjectPlaybackRoute()
+{
+    if (!shouldUseProjectPreview())
+    {
+        return false;
+    }
+
+    if (shouldUseLiveProjectPlayback())
+    {
+        transport_->useProjectPlayback(true);
+        previewPlaybackActive_ = false;
+        previewPlaybackDirty_ = false;
+        syncEngineIntegrationState("project playback routed live");
+        return transport_->usingProjectPlayback() && transport_->sourceDurationSec() > 0.0;
+    }
+
+    if (transport_->usingProjectPlayback())
+    {
+        transport_->useProjectPlayback(false);
+    }
+
+    return preparePreviewPlayback();
+}
+
 bool AppController::preparePreviewPlayback()
 {
     auto& state = projectManager_->state();
-    const auto previewRouteWasActive = transport_->usingProjectPlayback()
-        || (!previewMixPath_.empty() && transport_->sourcePath() == previewMixPath_.string());
+    const auto previewRouteWasActive = !previewMixPath_.empty()
+        && transport_->sourcePath() == previewMixPath_.string();
 
     if (state.clips.empty())
     {
@@ -1043,17 +1113,7 @@ bool AppController::preparePreviewPlayback()
     }
 
     const auto durationSec = std::max(0.1, exportService_->estimateMixDuration(state));
-    if (durationSec <= 0.0)
-    {
-        if (previewRouteWasActive)
-        {
-            previewPlaybackActive_ = false;
-            transport_->clearLoadedSource();
-        }
-        return false;
-    }
-
-    if (projectManager_->cacheDirectory().empty())
+    if (durationSec <= 0.0 || projectManager_->cacheDirectory().empty())
     {
         if (previewRouteWasActive)
         {
@@ -1064,6 +1124,11 @@ bool AppController::preparePreviewPlayback()
     }
 
     previewMixPath_ = projectManager_->cacheDirectory() / "timeline_preview_mix.wav";
+    if (transport_->usingProjectPlayback())
+    {
+        transport_->useProjectPlayback(false);
+    }
+
     if (previewPlaybackDirty_ || transport_->sourcePath() != previewMixPath_.string() || !std::filesystem::exists(previewMixPath_))
     {
         if (!exportService_->exportMix(state, previewMixPath_))
@@ -1073,12 +1138,11 @@ bool AppController::preparePreviewPlayback()
                 previewPlaybackActive_ = false;
                 transport_->clearLoadedSource();
             }
-            logger_->warning("Falling back to selected clip playback because preview mix render failed");
+            logger_->warning("Project playback preview render failed");
             return false;
         }
         previewPlaybackDirty_ = false;
-        logger_->info("Prepared cached preview playback because realtime project playback is unavailable: "
-                      + transport_->projectPlaybackDiagnostic());
+        logger_->info("Prepared project playback preview mix");
     }
 
     if (transport_->sourcePath() != previewMixPath_.string()
@@ -1094,11 +1158,31 @@ bool AppController::preparePreviewPlayback()
             previewPlaybackActive_ = false;
             transport_->clearLoadedSource();
         }
-        logger_->warning("Preview playback path could not be loaded after rendering");
+        logger_->warning("Project playback preview source could not be loaded");
         return false;
     }
 
     return true;
+}
+
+double AppController::projectPlaybackDurationSec() const
+{
+    if (shouldUseProjectPreview())
+    {
+        return std::max(0.1, exportService_->estimateMixDuration(projectManager_->state()));
+    }
+
+    if (transport_->sourceDurationSec() > 0.0)
+    {
+        return transport_->sourceDurationSec();
+    }
+
+    if (const auto* clip = findSelectedClip(projectManager_->state()))
+    {
+        return clip->durationSec;
+    }
+
+    return 0.1;
 }
 
 bool AppController::canCloseSafely() const
@@ -1203,3 +1287,7 @@ void AppController::logPlaybackRouteTransition(const std::string& reason)
     lastPlaybackDiagnostic_ = currentDiagnostic;
 }
 }
+
+
+
+

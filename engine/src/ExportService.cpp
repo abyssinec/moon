@@ -1,4 +1,4 @@
-#include "ExportService.h"
+﻿#include "ExportService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -71,6 +71,42 @@ bool trackIsAudible(const ProjectState& state, const std::string& trackId)
     }
 
     return !trackIt->mute;
+}
+
+const TrackInfo* findTrack(const ProjectState& state, const std::string& trackId)
+{
+    const auto trackIt = std::find_if(
+        state.tracks.begin(),
+        state.tracks.end(),
+        [&trackId](const TrackInfo& track)
+        {
+            return track.id == trackId;
+        });
+    return trackIt == state.tracks.end() ? nullptr : &(*trackIt);
+}
+
+double trackGainLinear(const ProjectState& state, const std::string& trackId)
+{
+    if (const auto* track = findTrack(state, trackId))
+    {
+        return std::pow(10.0, track->gainDb / 20.0);
+    }
+    return 1.0;
+}
+
+float applyTrackPan(const ProjectState& state, const std::string& trackId, int channel, float sample)
+{
+    const auto* track = findTrack(state, trackId);
+    if (track == nullptr)
+    {
+        return sample;
+    }
+
+    const auto pan = std::clamp(track->pan, -1.0, 1.0);
+    const auto panNorm = (pan + 1.0) * 0.5;
+    const auto leftGain = std::cos(panNorm * 1.5707963267948966);
+    const auto rightGain = std::sin(panNorm * 1.5707963267948966);
+    return sample * static_cast<float>(channel == 0 ? leftGain : rightGain);
 }
 
 double clipStartSec(const ClipInfo& clip)
@@ -505,7 +541,9 @@ bool ExportService::renderProjectRange(const ProjectState& state,
             const auto sourceSec = clip.offsetSec + clipLocalSec;
             const auto sourceFrame = sourceSec * static_cast<double>(wavData.sampleRate);
             const auto envelope = static_cast<float>(
-                clipEnvelope(clip, clipLocalSec) * overlapCrossfadeWeight(state, clip, timelineSec));
+                clipEnvelope(clip, clipLocalSec)
+                * overlapCrossfadeWeight(state, clip, timelineSec)
+                * trackGainLinear(state, clip.trackId));
             if (envelope <= 0.0f)
             {
                 continue;
@@ -513,7 +551,11 @@ bool ExportService::renderProjectRange(const ProjectState& state,
 
             for (int channel = 0; channel < kOutputChannels; ++channel)
             {
-                const auto sample = sampleAt(wavData, sourceFrame, channel) * envelope;
+                const auto sample = applyTrackPan(
+                    state,
+                    clip.trackId,
+                    channel,
+                    sampleAt(wavData, sourceFrame, channel) * envelope);
                 mixBuffer[frame * static_cast<std::size_t>(kOutputChannels) + static_cast<std::size_t>(channel)] += sample;
             }
         }
@@ -529,6 +571,11 @@ bool ExportService::renderProjectRange(const ProjectState& state,
     return writePcm16Wav(outputPath, mixBuffer, state.sampleRate, kOutputChannels);
 }
 
+
+bool ExportService::clipParticipatesInMix(const ProjectState& state, const ClipInfo& clip)
+{
+    return clip.activeTake && trackIsAudible(state, clip.trackId);
+}
 bool ExportService::clipIntersectsRegion(const ClipInfo& clip, double startSec, double endSec)
 {
     const auto clipStart = clip.startSec;
@@ -566,3 +613,4 @@ double ExportService::trackDuration(const ProjectState& state, const std::string
     return maxEnd;
 }
 }
+

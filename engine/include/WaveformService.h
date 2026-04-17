@@ -15,6 +15,8 @@ struct WaveformData
     int channelCount{2};
     double durationSec{0.0};
     std::vector<float> peaks;
+    std::vector<float> mins;
+    std::vector<float> maxs;
 };
 
 class WaveformService

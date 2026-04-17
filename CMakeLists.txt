@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.24)
+﻿cmake_minimum_required(VERSION 3.24)
 
-project(MoonAudioEditor VERSION 0.1.0 LANGUAGES CXX)
+project(MoonAudioEditor VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,8 @@ option(MOON_ENABLE_PACKAGING "Enable install rules and package metadata" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
+
+find_package(JUCE CONFIG QUIET)
 
 add_subdirectory(engine)
 
@@ -40,3 +42,5 @@ message(STATUS "MoonAudioEditor configured")
 message(STATUS "  Desktop: ${MOON_ENABLE_DESKTOP}")
 message(STATUS "  Tracktion: ${MOON_ENABLE_TRACKTION}")
 message(STATUS "  Packaging: ${MOON_ENABLE_PACKAGING}")
+
+

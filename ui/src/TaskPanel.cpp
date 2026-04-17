@@ -9,37 +9,50 @@ TaskPanel::TaskPanel(moon::engine::TaskManager& taskManager, moon::engine::Logge
 {
 }
 
+void TaskPanel::updateContentSize(int availableWidth)
+{
+    const auto recentTasks = taskManager_.recentTasks();
+    const auto recentLogs = logger_.recent();
+    const int failureHeight = taskManager_.latestFailedTask().has_value() ? 50 : 0;
+    const int taskHeight = static_cast<int>(recentTasks.size()) * 34;
+    const int logHeight = static_cast<int>(recentLogs.size()) * 16;
+    const int contentHeight = 84 + failureHeight + taskHeight + logHeight;
+    setSize(juce::jmax(300, availableWidth), juce::jmax(160, contentHeight));
+}
+
 void TaskPanel::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour::fromRGB(38, 42, 48));
-    auto area = getLocalBounds().reduced(8);
+    g.fillAll(juce::Colour::fromRGB(19, 21, 25));
+    auto area = getLocalBounds().reduced(10, 8);
 
-    g.setColour(juce::Colours::white);
-    g.drawText("Tasks & Logs", area.removeFromTop(24), juce::Justification::centredLeft);
+    g.setColour(juce::Colours::white.withAlpha(0.92f));
+    g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    g.drawText("Tasks & Logs", area.removeFromTop(20), juce::Justification::centredLeft);
 
     const auto activeTasks = taskManager_.activeTaskCount();
     g.setColour(activeTasks > 0 ? juce::Colours::orange : juce::Colours::lightgreen);
-    g.drawText("Active tasks: " + juce::String(static_cast<int>(activeTasks)), area.removeFromTop(20), juce::Justification::centredLeft);
-    g.setColour(juce::Colours::lightgrey);
+    g.setFont(juce::FontOptions(10.0f));
+    g.drawText("Active " + juce::String(static_cast<int>(activeTasks)), area.removeFromTop(16), juce::Justification::centredLeft);
+    g.setColour(juce::Colours::lightgrey.withAlpha(0.72f));
     g.drawText(
-        "Completed: " + juce::String(static_cast<int>(taskManager_.completedTaskCount()))
-            + " | Failed: " + juce::String(static_cast<int>(taskManager_.failedTaskCount())),
-        area.removeFromTop(20),
+        "Done " + juce::String(static_cast<int>(taskManager_.completedTaskCount()))
+            + "  |  Failed " + juce::String(static_cast<int>(taskManager_.failedTaskCount())),
+        area.removeFromTop(16),
         juce::Justification::centredLeft);
 
-    const auto logPathText = "Log file: " + logger_.logFilePath().string();
-    g.setColour(juce::Colours::lightblue);
-    g.drawText(logPathText, area.removeFromTop(20), juce::Justification::centredLeft);
+    const auto logPathText = "Log: " + logger_.logFilePath().filename().string();
+    g.setColour(juce::Colour::fromRGB(112, 156, 186));
+    g.drawText(logPathText, area.removeFromTop(16), juce::Justification::centredLeft);
 
     if (const auto latestFailure = taskManager_.latestFailedTask(); latestFailure.has_value())
     {
-        auto failureArea = area.removeFromTop(52);
-        g.setColour(juce::Colour::fromRGB(92, 32, 32));
+        auto failureArea = area.removeFromTop(46);
+        g.setColour(juce::Colour::fromRGB(72, 28, 28));
         g.fillRoundedRectangle(failureArea.toFloat(), 6.0f);
         g.setColour(juce::Colours::salmon);
         g.drawText(
             "Latest failure: " + latestFailure->type + " [" + latestFailure->id + "]",
-            failureArea.removeFromTop(22).reduced(8, 2),
+            failureArea.removeFromTop(20).reduced(8, 1),
             juce::Justification::centredLeft);
         g.setColour(juce::Colours::white);
         g.drawText(
@@ -47,12 +60,14 @@ void TaskPanel::paint(juce::Graphics& g)
             failureArea.reduced(8, 2),
             juce::Justification::topLeft,
             true);
-        area.removeFromTop(4);
+        area.removeFromTop(2);
     }
 
-    auto tasksArea = area.removeFromTop(getHeight() / 2 - 24);
+    const auto recentTasks = taskManager_.recentTasks();
+    const auto recentLogs = logger_.recent();
+    auto tasksArea = area.removeFromTop(juce::jmax(44, static_cast<int>(recentTasks.size()) * 34 + 12));
     int y = tasksArea.getY();
-    for (const auto& task : taskManager_.recentTasks())
+    for (const auto& task : recentTasks)
     {
         juce::Colour statusColour = juce::Colours::lightblue;
         if (task.status == "completed")
@@ -68,31 +83,34 @@ void TaskPanel::paint(juce::Graphics& g)
             statusColour = juce::Colours::orange;
         }
 
-        g.setColour(juce::Colour::fromRGB(55, 60, 68));
-        g.fillRoundedRectangle(8.0f, static_cast<float>(y), static_cast<float>(getWidth() - 16), 34.0f, 6.0f);
+        g.setColour(juce::Colour::fromRGB(29, 33, 39));
+        g.fillRoundedRectangle(8.0f, static_cast<float>(y), static_cast<float>(getWidth() - 16), 28.0f, 6.0f);
         g.setColour(statusColour);
-        g.drawText(task.id + " [" + task.status + "] " + task.message, 16, y + 4, getWidth() - 32, 14, juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        g.drawText(task.id + " [" + task.status + "] " + task.message, 16, y + 3, getWidth() - 32, 12, juce::Justification::centredLeft);
 
         const auto progressWidth = static_cast<int>((getWidth() - 32) * juce::jlimit(0.0, 1.0, task.progress));
         g.setColour(juce::Colour::fromRGB(28, 31, 36));
-        g.fillRoundedRectangle(16.0f, static_cast<float>(y + 20), static_cast<float>(getWidth() - 32), 8.0f, 3.0f);
+        g.fillRoundedRectangle(16.0f, static_cast<float>(y + 17), static_cast<float>(getWidth() - 32), 6.0f, 3.0f);
         g.setColour(statusColour);
-        g.fillRoundedRectangle(16.0f, static_cast<float>(y + 20), static_cast<float>(progressWidth), 8.0f, 3.0f);
+        g.fillRoundedRectangle(16.0f, static_cast<float>(y + 17), static_cast<float>(progressWidth), 6.0f, 3.0f);
         g.setColour(juce::Colours::white.withAlpha(0.8f));
-        g.drawText(juce::String(task.progress * 100.0, 0) + "%", getWidth() - 56, y + 4, 40, 14, juce::Justification::centredRight);
+        g.setFont(juce::FontOptions(9.0f));
+        g.drawText(juce::String(task.progress * 100.0, 0) + "%", getWidth() - 56, y + 2, 40, 12, juce::Justification::centredRight);
 
-        y += 40;
-        if (y > tasksArea.getBottom() - 30)
+        y += 34;
+        if (y > tasksArea.getBottom() - 24)
         {
             break;
         }
     }
 
     auto logsArea = area;
-    y = logsArea.getY() + 8;
-    g.setColour(juce::Colours::white);
-    g.drawText("Recent logs", logsArea.removeFromTop(20), juce::Justification::centredLeft);
-    for (const auto& line : logger_.recent())
+    y = logsArea.getY() + 6;
+    g.setColour(juce::Colours::white.withAlpha(0.82f));
+    g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+    g.drawText("Recent logs", logsArea.removeFromTop(16), juce::Justification::centredLeft);
+    for (const auto& line : recentLogs)
     {
         juce::Colour lineColour = juce::Colours::lightgrey;
         if (line.find("[ERROR]") != std::string::npos)
@@ -105,12 +123,9 @@ void TaskPanel::paint(juce::Graphics& g)
         }
 
         g.setColour(lineColour);
-        g.drawText(line, 8, y, getWidth() - 16, 18, juce::Justification::centredLeft);
-        y += 16;
-        if (y > getHeight() - 18)
-        {
-            break;
-        }
+        g.setFont(juce::FontOptions(9.0f));
+        g.drawText(line, 8, y, getWidth() - 16, 15, juce::Justification::centredLeft);
+        y += 14;
     }
 }
 

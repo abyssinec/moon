@@ -24,6 +24,8 @@ struct TrackInfo
     std::string name;
     bool mute{false};
     bool solo{false};
+    double gainDb{0.0};
+    double pan{0.0};
 };
 
 struct ClipInfo

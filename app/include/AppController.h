@@ -69,9 +69,13 @@ public:
     bool refreshBackendStatus();
     bool rebuildPreviewPlayback();
     void maintainPreviewPlayback();
+    void notifyProjectMixChanged();
+    void refreshPlaybackUiState();
     std::string windowTitle() const;
     std::string startupNotice() const;
     void clearStartupNotice();
+    double projectPlaybackDurationSec() const;
+    double projectTempo() const noexcept { return projectManager_->state().tempo; }
     bool hasUnsavedChanges() const noexcept { return projectDirty_; }
     bool hasStalePreview() const noexcept { return previewPlaybackDirty_; }
     std::optional<std::string> projectFilePath() const;
@@ -124,6 +128,8 @@ private:
                               const std::string& operationName = "timeline-edit");
     void restorePlaybackAfterTimelineEdit(bool wasPlaying, double timelinePlayheadSec);
     bool shouldUseProjectPreview() const;
+    bool shouldUseLiveProjectPlayback() const;
+    bool ensureProjectPlaybackRoute();
     bool preparePreviewPlayback();
 };
 }
