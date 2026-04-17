@@ -32,3 +32,6 @@ cache/
 *.vsidx
 *.sqlite
 *.wsuo
+backend/.venv/
+backend/**/__pycache__/
+*.pyc
