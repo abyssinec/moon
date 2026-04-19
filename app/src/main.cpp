@@ -4,6 +4,7 @@
 #if MOON_HAS_JUCE
 #include <memory>
 #include <juce_events/juce_events.h>
+
 #include "AppConfig.h"
 
 namespace moon::app
@@ -13,6 +14,11 @@ class MoonApplication final : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override { return juce::String(AppConfig::appName.data()); }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
+
+    void systemRequestedQuit() override
+    {
+        quit();
+    }
 
     void initialise(const juce::String&) override
     {
@@ -24,6 +30,10 @@ public:
     void shutdown() override
     {
         window_.reset();
+        if (controller_ != nullptr)
+        {
+            controller_->prepareForShutdown();
+        }
         controller_.reset();
     }
 

@@ -1,7 +1,9 @@
 #include "TimelineView.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
 
 #if MOON_HAS_JUCE
 namespace moon::ui
@@ -11,7 +13,33 @@ namespace
 constexpr int kTimelineLeftPadding = 0;
 constexpr int kHeaderHeight = 0;
 constexpr int kRulerHeight = 30;
-constexpr int kFooterHeight = 26;
+constexpr int kFooterHeight = 0;
+constexpr int kWaveformInsetX = 2;
+constexpr int kWaveformInsetTop = 4;
+constexpr int kWaveformInsetBottom = 4;
+
+juce::Colour parseTrackColour(const std::string& colorHex)
+{
+    if (colorHex.size() == 7 && colorHex.front() == '#')
+    {
+        return juce::Colour::fromString(juce::String("ff") + juce::String(colorHex.substr(1)));
+    }
+    return juce::Colour::fromRGB(45, 150, 255);
+}
+
+juce::Colour defaultTrackColour(int index)
+{
+    static constexpr std::array<juce::uint32, 8> palette{
+        0xff2d96ffu,
+        0xffff2b8au,
+        0xff18c458u,
+        0xffebc414u,
+        0xff8c66ffu,
+        0xffff8740u,
+        0xff19c2cau,
+        0xffff5e5eu};
+    return juce::Colour(palette[static_cast<std::size_t>(index) % palette.size()]);
+}
 
 std::string resolveAssetPath(const moon::engine::ProjectState& state, const moon::engine::ClipInfo& clip)
 {
@@ -24,6 +52,21 @@ std::string resolveAssetPath(const moon::engine::ProjectState& state, const moon
         return generatedIt->second.path;
     }
     return {};
+}
+
+juce::String resolveClipDisplayName(const moon::engine::ProjectState& state, const moon::engine::ClipInfo& clip)
+{
+    const auto assetPath = resolveAssetPath(state, clip);
+    if (!assetPath.empty())
+    {
+        const auto stem = std::filesystem::path(assetPath).stem().string();
+        if (!stem.empty())
+        {
+            return juce::String(stem);
+        }
+    }
+
+    return juce::String(clip.id);
 }
 
 bool anyTrackSoloed(const moon::engine::ProjectState& state)
@@ -68,6 +111,50 @@ double clipEndSec(const moon::engine::ClipInfo& clip)
 {
     return clip.startSec + clip.durationSec;
 }
+
+juce::Colour waveformPlaceholderFor(const juce::Colour& baseColour)
+{
+    return baseColour.contrasting(0.82f).withAlpha(0.72f);
+}
+
+juce::Colour waveformStrokeFor(const juce::Colour& baseColour)
+{
+    return baseColour.contrasting(0.78f).withAlpha(0.82f);
+}
+
+double beatDurationSec(double tempo, int denominator)
+{
+    const double quarterNoteSec = 60.0 / juce::jmax(30.0, tempo);
+    return quarterNoteSec * (4.0 / static_cast<double>(juce::jmax(1, denominator)));
+}
+
+double barDurationSec(double tempo, int numerator, int denominator)
+{
+    return beatDurationSec(tempo, denominator) * static_cast<double>(juce::jmax(1, numerator));
+}
+
+double gridDivisionSec(TimelineGridMode mode, double tempo, int numerator, int denominator)
+{
+    const auto beatSec = beatDurationSec(tempo, denominator);
+    const auto barSec = barDurationSec(tempo, numerator, denominator);
+    switch (mode)
+    {
+    case TimelineGridMode::None:      return 0.0;
+    case TimelineGridMode::StepDiv6:  return beatSec / 24.0;
+    case TimelineGridMode::StepDiv4:  return beatSec / 16.0;
+    case TimelineGridMode::StepDiv3:  return beatSec / 12.0;
+    case TimelineGridMode::StepDiv2:  return beatSec / 8.0;
+    case TimelineGridMode::Step:      return beatSec / 4.0;
+    case TimelineGridMode::BeatDiv6:  return beatSec / 6.0;
+    case TimelineGridMode::BeatDiv4:  return beatSec / 4.0;
+    case TimelineGridMode::BeatDiv3:  return beatSec / 3.0;
+    case TimelineGridMode::BeatDiv2:  return beatSec / 2.0;
+    case TimelineGridMode::Beat:      return beatSec;
+    case TimelineGridMode::Bar:       return barSec;
+    }
+
+    return beatSec;
+}
 }
 
 TimelineView::TimelineView(moon::engine::TimelineFacade& timeline,
@@ -96,7 +183,15 @@ TimelineView::TimelineView(moon::engine::TimelineFacade& timeline,
     , setFadeOutCallback_(std::move(setFadeOutCallback))
     , trimLeftCallback_(std::move(trimLeftCallback))
     , trimRightCallback_(std::move(trimRightCallback))
+    , waveformTileCache_(waveformService)
 {
+    waveformService_.addListener(this);
+}
+
+TimelineView::~TimelineView()
+{
+    waveformRendererOpenGL_.detach();
+    waveformService_.removeListener(this);
 }
 
 void TimelineView::resized()
@@ -106,31 +201,70 @@ void TimelineView::resized()
 
 void TimelineView::paint(juce::Graphics& g)
 {
+    paintTimelineBase(g);
+    paintWaveformLayer(g);
+}
+
+void TimelineView::paintTimelineBase(juce::Graphics& g)
+{
     const auto& state = projectManager_.state();
     const auto tempo = juce::jmax(30.0, state.tempo);
-    const double beatSec = 60.0 / tempo;
-    const double barSec = beatSec * 4.0;
-
+    const auto numerator = juce::jmax(1, state.timeSignatureNumerator);
+    const auto denominator = juce::jmax(1, state.timeSignatureDenominator);
+    const double beatSec = beatDurationSec(tempo, denominator);
+    const double barSec = barDurationSec(tempo, numerator, denominator);
+    const double gridSec = gridDivisionSec(gridMode_, tempo, numerator, denominator);
+    const auto visibleArea = g.getClipBounds();
+    const auto visibleStartSec = juce::jmax(0.0, xToTime(visibleArea.getX() - 8));
+    const auto visibleEndSec = juce::jmax(visibleStartSec, xToTime(visibleArea.getRight() + 8));
+    const auto firstBeatIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / beatSec)) - 1);
+    const auto lastBeatIndex = juce::jmax(firstBeatIndex, static_cast<int>(std::ceil(visibleEndSec / beatSec)) + 1);
     g.fillAll(juce::Colour::fromRGB(18, 20, 24));
-    g.setColour(juce::Colour::fromRGB(28, 31, 36));
-    g.fillRect(kTimelineLeftPadding, 0, getWidth() - kTimelineLeftPadding, kHeaderHeight + kRulerHeight);
-    g.setColour(juce::Colour::fromRGB(12, 14, 18));
-    g.fillRect(kTimelineLeftPadding, getHeight() - kFooterHeight, getWidth() - kTimelineLeftPadding, kFooterHeight);
 
-    const auto maxTimelineSec = xToTime(getWidth());
-    for (double beat = 0.0; beat <= maxTimelineSec + beatSec; beat += beatSec)
+    const auto firstBarIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / barSec)) - 1);
+    const auto lastBarIndex = juce::jmax(firstBarIndex, static_cast<int>(std::ceil(visibleEndSec / barSec)) + 1);
+    for (int barIndex = firstBarIndex; barIndex <= lastBarIndex; ++barIndex)
     {
-        const auto x = kTimelineLeftPadding + static_cast<int>(beat * pixelsPerSecond_);
-        const bool isBar = std::fmod(beat, barSec) < 0.0001 || std::abs(std::fmod(beat, barSec) - barSec) < 0.0001;
-        g.setColour(isBar ? juce::Colour::fromRGB(58, 64, 72) : juce::Colour::fromRGB(36, 40, 46));
-        g.drawLine(static_cast<float>(x), static_cast<float>(kHeaderHeight), static_cast<float>(x), static_cast<float>(getHeight() - kFooterHeight), isBar ? 1.4f : 0.7f);
-        if (isBar)
+        if ((barIndex % 2) != 0)
         {
-            const auto barIndex = static_cast<int>(std::floor(beat / barSec)) + 1;
-            g.setColour(juce::Colours::white.withAlpha(0.96f));
-            g.setFont(juce::FontOptions(13.5f, juce::Font::bold));
-            g.drawText(juce::String::formatted("%d.%d", barIndex, 1), x + 6, 6, 48, 18, juce::Justification::centredLeft);
+            continue;
         }
+
+        const auto barStartSec = static_cast<double>(barIndex) * barSec;
+        const auto barEndSec = barStartSec + barSec;
+        const auto barX = kTimelineLeftPadding + static_cast<int>(std::round(barStartSec * pixelsPerSecond_));
+        const auto barW = static_cast<int>(std::round((barEndSec - barStartSec) * pixelsPerSecond_));
+        g.setColour(juce::Colour::fromRGB(22, 25, 29));
+        g.fillRect(barX, kHeaderHeight, barW, getHeight() - kFooterHeight);
+    }
+
+    if (gridSec > 0.0)
+    {
+        const auto firstGridIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / gridSec)) - 1);
+        const auto lastGridIndex = juce::jmax(firstGridIndex, static_cast<int>(std::ceil(visibleEndSec / gridSec)) + 1);
+        for (int gridIndex = firstGridIndex; gridIndex <= lastGridIndex; ++gridIndex)
+        {
+            const auto gridPosSec = static_cast<double>(gridIndex) * gridSec;
+            const auto x = kTimelineLeftPadding + static_cast<int>(std::round(gridPosSec * pixelsPerSecond_));
+            const bool isBar = std::abs(std::remainder(gridPosSec, barSec)) < 0.0001;
+            const bool isBeat = std::abs(std::remainder(gridPosSec, beatSec)) < 0.0001;
+            if (isBar)
+            {
+                continue;
+            }
+
+            g.setColour(isBeat ? juce::Colour::fromRGB(38, 43, 49) : juce::Colour::fromRGB(28, 31, 36));
+            g.drawLine(static_cast<float>(x), static_cast<float>(kHeaderHeight), static_cast<float>(x), static_cast<float>(getHeight() - kFooterHeight), isBeat ? 0.8f : 0.45f);
+        }
+    }
+
+    for (int beatIndex = firstBeatIndex; beatIndex <= lastBeatIndex; ++beatIndex)
+    {
+        const auto beat = static_cast<double>(beatIndex) * beatSec;
+        const auto x = kTimelineLeftPadding + static_cast<int>(beat * pixelsPerSecond_);
+        const bool isBar = beatIndex % numerator == 0;
+        g.setColour(isBar ? juce::Colour::fromRGB(47, 52, 58) : juce::Colour::fromRGB(31, 35, 40));
+        g.drawLine(static_cast<float>(x), static_cast<float>(kHeaderHeight), static_cast<float>(x), static_cast<float>(getHeight() - kFooterHeight), isBar ? 1.15f : 0.65f);
     }
 
     for (const auto& clip : state.clips)
@@ -146,121 +280,163 @@ void TimelineView::paint(juce::Graphics& g)
         }
 
         const auto bounds = clipBounds(state, clip);
+        if (!bounds.intersects(visibleArea.expanded(24, 0)))
+        {
+            continue;
+        }
         const int x = bounds.getX();
         const int width = bounds.getWidth();
         const int clipY = clipYForIndex(trackIndex);
-        const auto baseColour = clip.selected
-            ? juce::Colour::fromRGB(238, 176, 55)
-            : (clip.activeTake ? juce::Colour::fromRGB(18, 172, 74) : juce::Colour::fromRGB(46, 127, 222));
+        const auto baseColour = trackAccentForClip(state, clip, clip.selected);
         juce::ColourGradient clipGradient(
             baseColour.brighter(0.12f),
             static_cast<float>(x),
             static_cast<float>(clipY),
             baseColour.darker(0.18f),
             static_cast<float>(x),
-            static_cast<float>(clipY + 48),
+            static_cast<float>(clipY + moon::ui::layout::kClipRowHeight),
             false);
         g.setGradientFill(clipGradient);
-        g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), 48.0f, 6.0f);
-        for (double beat = 0.0; beat <= maxTimelineSec + beatSec; beat += beatSec)
+        g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), static_cast<float>(moon::ui::layout::kClipRowHeight), 6.0f);
+        const auto clipStartSec = juce::jmax(0.0, static_cast<double>(x - kTimelineLeftPadding) / pixelsPerSecond_);
+        const auto clipEndVisibleSec = clipStartSec + static_cast<double>(width) / pixelsPerSecond_;
+        const auto clipFirstBeatIndex = juce::jmax(0, static_cast<int>(std::floor(clipStartSec / beatSec)) - 1);
+        const auto clipLastBeatIndex = juce::jmax(clipFirstBeatIndex, static_cast<int>(std::ceil(clipEndVisibleSec / beatSec)) + 1);
+        for (int beatIndex = clipFirstBeatIndex; beatIndex <= clipLastBeatIndex; ++beatIndex)
         {
+            const auto beat = static_cast<double>(beatIndex) * beatSec;
             const auto beatX = kTimelineLeftPadding + static_cast<int>(beat * pixelsPerSecond_);
             if (beatX <= x + 2 || beatX >= x + width - 2)
             {
                 continue;
             }
 
-            const bool isBar = std::fmod(beat, barSec) < 0.0001 || std::abs(std::fmod(beat, barSec) - barSec) < 0.0001;
-            g.setColour(juce::Colours::black.withAlpha(isBar ? 0.22f : 0.11f));
-            g.drawLine(static_cast<float>(beatX), static_cast<float>(clipY + 1), static_cast<float>(beatX), static_cast<float>(clipY + 47), isBar ? 1.0f : 0.7f);
+            const bool isBar = beatIndex % numerator == 0;
+            g.setColour(juce::Colours::black.withAlpha(isBar ? 0.12f : 0.05f));
+            g.drawLine(static_cast<float>(beatX), static_cast<float>(clipY + 1), static_cast<float>(beatX), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 1), isBar ? 1.0f : 0.7f);
         }
         g.setColour(baseColour.brighter(0.4f));
-        g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), 48.0f, 6.0f, 1.2f);
+        g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), static_cast<float>(moon::ui::layout::kClipRowHeight), 6.0f, 1.2f);
+    }
+}
+
+void TimelineView::paintOverChildren(juce::Graphics& g)
+{
+    paintClipOverlays(g);
+}
+
+void TimelineView::paintWaveformLayer(juce::Graphics& g)
+{
+    const auto& state = projectManager_.state();
+    const auto visibleArea = g.getClipBounds();
+    std::vector<WaveformRendererOpenGL::DrawItem> gpuWaveformItems;
+
+    for (const auto& clip : state.clips)
+    {
+        const auto bounds = clipBounds(state, clip);
+        if (!bounds.intersects(visibleArea.expanded(24, 0)))
+        {
+            continue;
+        }
+
+        const auto baseColour = trackAccentForClip(state, clip, clip.selected);
+        const auto waveformColour = waveformStrokeFor(baseColour);
+        auto waveformBatch = waveformTileCache_.prepareVisibleTiles(
+            clip,
+            resolveAssetPath(state, clip),
+            bounds,
+            visibleArea,
+            pixelsPerSecond_,
+            waveformDetailScale_,
+            {
+                waveformColour,
+                waveformPlaceholderFor(baseColour)
+            });
+
+        if (waveformRendererOpenGL_.isReady())
+        {
+            gpuWaveformItems.insert(
+                gpuWaveformItems.end(),
+                waveformBatch.gpuItems.begin(),
+                waveformBatch.gpuItems.end());
+        }
+        else
+        {
+            waveformTileCache_.drawCpuFallback(g, waveformBatch);
+        }
+    }
+
+    lastWaveformBatch_.gpuItems = gpuWaveformItems;
+    lastWaveformBatch_.needsCpuFallback = !waveformRendererOpenGL_.isReady();
+    if (waveformRendererOpenGL_.isReady())
+    {
+        waveformRendererOpenGL_.setVisibleTiles(std::move(gpuWaveformItems));
+    }
+    else
+    {
+        waveformRendererOpenGL_.setVisibleTiles({});
+    }
+}
+
+void TimelineView::paintClipOverlays(juce::Graphics& g)
+{
+    const auto& state = projectManager_.state();
+    const auto visibleArea = g.getClipBounds();
+
+    for (const auto& clip : state.clips)
+    {
+        const auto bounds = clipBounds(state, clip);
+        if (!bounds.intersects(visibleArea.expanded(24, 0)))
+        {
+            continue;
+        }
+
+        const int x = bounds.getX();
+        const int width = bounds.getWidth();
+        const int clipY = bounds.getY();
+        const int labelInset = clip.selected ? 18 : 8;
         g.setColour(juce::Colours::white.withAlpha(0.9f));
         g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        g.drawText(clip.id, x + 8, clipY + 6, width - 16, 16, juce::Justification::centredLeft);
+        g.drawText(resolveClipDisplayName(state, clip), x + labelInset, clipY + 4, width - (labelInset + 8), 16, juce::Justification::centredLeft);
         if (clip.selected)
         {
-            g.setColour(juce::Colours::white.withAlpha(0.82f));
-            g.drawLine(static_cast<float>(x + 4), static_cast<float>(clipY + 4), static_cast<float>(x + 4), static_cast<float>(clipY + 13), 1.6f);
-            g.drawLine(static_cast<float>(x + width - 4), static_cast<float>(clipY + 4), static_cast<float>(x + width - 4), static_cast<float>(clipY + 13), 1.6f);
-            g.drawLine(static_cast<float>(x + 4), static_cast<float>(clipY + 44), static_cast<float>(x + 10), static_cast<float>(clipY + 38), 1.4f);
-            g.drawLine(static_cast<float>(x + width - 4), static_cast<float>(clipY + 44), static_cast<float>(x + width - 10), static_cast<float>(clipY + 38), 1.4f);
+            g.setColour(juce::Colours::white.withAlpha(0.9f));
+            g.drawLine(static_cast<float>(x + 5), static_cast<float>(clipY + 4), static_cast<float>(x + 5), static_cast<float>(clipY + 15), 2.0f);
+            g.drawLine(static_cast<float>(x + width - 5), static_cast<float>(clipY + 4), static_cast<float>(x + width - 5), static_cast<float>(clipY + 15), 2.0f);
+            g.drawLine(static_cast<float>(x + 5), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 5), static_cast<float>(x + 13), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 13), 1.8f);
+            g.drawLine(static_cast<float>(x + width - 5), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 5), static_cast<float>(x + width - 13), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 13), 1.8f);
+            g.setColour(juce::Colours::black.withAlpha(0.18f));
+            g.drawLine(static_cast<float>(x + 7), static_cast<float>(clipY + 4), static_cast<float>(x + 7), static_cast<float>(clipY + 15), 1.0f);
+            g.drawLine(static_cast<float>(x + width - 7), static_cast<float>(clipY + 4), static_cast<float>(x + width - 7), static_cast<float>(clipY + 15), 1.0f);
         }
         if (!clip.takeGroupId.empty())
         {
             g.setColour(clip.activeTake ? juce::Colours::lightgreen : juce::Colours::lightgrey);
             g.setFont(juce::FontOptions(10.0f));
-            g.drawText(clip.activeTake ? "ACTIVE TAKE" : "ALT TAKE", x + 8, clipY + 21, width - 16, 12, juce::Justification::centredLeft);
+            g.drawText(clip.activeTake ? "ACTIVE TAKE" : "ALT TAKE", x + 8, clipY + 18, width - 16, 12, juce::Justification::centredLeft);
         }
-
-        const auto assetPath = resolveAssetPath(state, clip);
-        const auto waveform = waveformService_.requestWaveform(assetPath);
-        g.setColour(juce::Colours::black.withAlpha(0.08f));
-        g.fillRoundedRectangle(static_cast<float>(x + 4), static_cast<float>(clipY + 14), static_cast<float>(juce::jmax(20, width - 8)), 30.0f, 4.0f);
-        const auto innerWidth = juce::jmax(1, width - 12);
-        const auto bucketCount = juce::jmax(1, static_cast<int>(waveform.peaks.size()));
-        const float centerY = static_cast<float>(clipY + 29.0f);
-        juce::Path waveformFill;
-        std::vector<juce::Point<float>> bottomPoints;
-        const float amplitudeScale = pixelsPerSecond_ >= 180.0 ? 13.5f : (pixelsPerSecond_ >= 90.0 ? 11.5f : 9.5f);
-        const float minAmplitude = pixelsPerSecond_ >= 180.0 ? 1.2f : (pixelsPerSecond_ >= 90.0 ? 1.9f : 2.8f);
-        const auto sourceDuration = std::max(0.001, waveform.durationSec);
-        bool startedWaveform = false;
-        for (int i = 0; i < innerWidth; ++i)
-        {
-            const auto clipRatio = static_cast<double>(i) / static_cast<double>(juce::jmax(1, innerWidth - 1));
-            const auto sourceTimeSec = std::clamp(clip.offsetSec + clip.durationSec * clipRatio, 0.0, sourceDuration);
-            const auto sourceRatio = sourceTimeSec / sourceDuration;
-            const auto bucketIndex = std::min(bucketCount - 1, static_cast<int>(sourceRatio * static_cast<double>(bucketCount - 1)));
-            const auto safeIndex = static_cast<std::size_t>(bucketIndex);
-            const float maxSample = waveform.maxs.empty() ? 0.0f : waveform.maxs[safeIndex];
-            const float minSample = waveform.mins.empty() ? 0.0f : waveform.mins[safeIndex];
-            const float topAmplitude = std::max(minAmplitude, std::abs(maxSample) * amplitudeScale);
-            const float bottomAmplitude = std::max(minAmplitude, std::abs(minSample) * amplitudeScale);
-            const float px = static_cast<float>(x + 6 + i);
-            const float topY = centerY - topAmplitude;
-            const float bottomY = centerY + bottomAmplitude;
-            if (!startedWaveform)
-            {
-                waveformFill.startNewSubPath(px, topY);
-                startedWaveform = true;
-            }
-            else
-            {
-                waveformFill.lineTo(px, topY);
-            }
-            bottomPoints.emplace_back(px, bottomY);
-        }
-        for (auto it = bottomPoints.rbegin(); it != bottomPoints.rend(); ++it)
-        {
-            waveformFill.lineTo(it->x, it->y);
-        }
-        waveformFill.closeSubPath();
-        g.setColour(baseColour.darker(0.28f).withAlpha(0.88f));
-        g.fillPath(waveformFill);
-        g.setColour(baseColour.darker(0.48f).withAlpha(0.72f));
-        g.strokePath(waveformFill, juce::PathStrokeType(0.55f));
-        g.setColour(juce::Colours::black.withAlpha(0.12f));
-        g.drawLine(static_cast<float>(x + 6), centerY, static_cast<float>(x + width - 6), centerY, 1.0f);
 
         if (clip.fadeInSec > 0.0)
         {
             const auto fadeWidth = juce::jmin(width / 2, static_cast<int>(clip.fadeInSec * pixelsPerSecond_));
             juce::Path fadeCurve;
             juce::Path fadeFill;
-            fadeCurve.startNewSubPath(static_cast<float>(x + 2), static_cast<float>(clipY + 46));
-            fadeFill.startNewSubPath(static_cast<float>(x + 2), static_cast<float>(clipY + 4));
-            fadeFill.lineTo(static_cast<float>(x + 2), static_cast<float>(clipY + 46));
+            const auto clipTop = static_cast<float>(clipY);
+            const auto clipBottom = static_cast<float>(clipY + moon::ui::layout::kClipRowHeight);
+            const auto clipHeight = clipBottom - clipTop;
+            fadeCurve.startNewSubPath(static_cast<float>(x), clipBottom);
+            fadeFill.startNewSubPath(static_cast<float>(x), clipTop);
+            fadeFill.lineTo(static_cast<float>(x), clipBottom);
             for (int sample = 0; sample <= juce::jmax(4, fadeWidth); ++sample)
             {
                 const auto ratio = static_cast<float>(sample) / static_cast<float>(juce::jmax(1, fadeWidth));
-                const auto px = static_cast<float>(x + 2 + sample);
-                const auto py = static_cast<float>(clipY + 46) - std::sin(ratio * juce::MathConstants<float>::halfPi) * 42.0f;
+                const auto px = static_cast<float>(x + sample);
+                const auto easedRatio = 0.5f - 0.5f * std::cos(ratio * juce::MathConstants<float>::pi);
+                const auto py = clipBottom - easedRatio * clipHeight;
                 fadeCurve.lineTo(px, py);
                 fadeFill.lineTo(px, py);
             }
-            fadeFill.lineTo(static_cast<float>(x + 2 + fadeWidth), static_cast<float>(clipY + 4));
+            fadeFill.lineTo(static_cast<float>(x + fadeWidth), clipTop);
             fadeFill.closeSubPath();
             g.setColour(juce::Colours::white.withAlpha(0.12f));
             g.fillPath(fadeFill);
@@ -272,23 +448,51 @@ void TimelineView::paint(juce::Graphics& g)
             const auto fadeWidth = juce::jmin(width / 2, static_cast<int>(clip.fadeOutSec * pixelsPerSecond_));
             juce::Path fadeCurve;
             juce::Path fadeFill;
-            fadeCurve.startNewSubPath(static_cast<float>(x + width - fadeWidth), static_cast<float>(clipY + 4));
-            fadeFill.startNewSubPath(static_cast<float>(x + width - fadeWidth), static_cast<float>(clipY + 4));
+            const auto clipTop = static_cast<float>(clipY);
+            const auto clipBottom = static_cast<float>(clipY + moon::ui::layout::kClipRowHeight);
+            const auto clipHeight = clipBottom - clipTop;
+            fadeCurve.startNewSubPath(static_cast<float>(x + width - fadeWidth), clipTop);
+            fadeFill.startNewSubPath(static_cast<float>(x + width - fadeWidth), clipTop);
             for (int sample = 0; sample <= juce::jmax(4, fadeWidth); ++sample)
             {
                 const auto ratio = static_cast<float>(sample) / static_cast<float>(juce::jmax(1, fadeWidth));
                 const auto px = static_cast<float>(x + width - fadeWidth + sample);
-                const auto py = static_cast<float>(clipY + 4) + (1.0f - std::cos(ratio * juce::MathConstants<float>::halfPi)) * 42.0f;
+                const auto easedRatio = 0.5f - 0.5f * std::cos(ratio * juce::MathConstants<float>::pi);
+                const auto py = clipTop + easedRatio * clipHeight;
                 fadeCurve.lineTo(px, py);
                 fadeFill.lineTo(px, py);
             }
-            fadeFill.lineTo(static_cast<float>(x + width), static_cast<float>(clipY + 46));
-            fadeFill.lineTo(static_cast<float>(x + width), static_cast<float>(clipY + 4));
+            fadeFill.lineTo(static_cast<float>(x + width), clipBottom);
+            fadeFill.lineTo(static_cast<float>(x + width), clipTop);
             fadeFill.closeSubPath();
             g.setColour(juce::Colours::white.withAlpha(0.12f));
             g.fillPath(fadeFill);
             g.setColour(juce::Colours::white.withAlpha(0.76f));
             g.strokePath(fadeCurve, juce::PathStrokeType(2.0f));
+        }
+    }
+
+    if (!dropHoverTrackId_.empty())
+    {
+        const auto trackIndex = [&state, this]() -> int
+        {
+            for (std::size_t i = 0; i < state.tracks.size(); ++i)
+            {
+                if (state.tracks[i].id == dropHoverTrackId_)
+                {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        }();
+
+        if (trackIndex >= 0)
+        {
+            const auto hoverY = clipYForIndex(trackIndex);
+            g.setColour(juce::Colour::fromRGB(83, 203, 255).withAlpha(0.12f));
+            g.fillRect(visibleArea.getX(), hoverY, visibleArea.getWidth(), moon::ui::layout::kClipRowHeight);
+            g.setColour(juce::Colour::fromRGB(83, 203, 255).withAlpha(0.82f));
+            g.drawLine(static_cast<float>(visibleArea.getX()), static_cast<float>(hoverY + moon::ui::layout::kClipRowHeight), static_cast<float>(visibleArea.getRight()), static_cast<float>(hoverY + moon::ui::layout::kClipRowHeight), 1.6f);
         }
     }
 
@@ -329,13 +533,14 @@ void TimelineView::paint(juce::Graphics& g)
             const auto overlapW = juce::jmax(2, static_cast<int>((overlapEnd - overlapStart) * pixelsPerSecond_));
             const auto clipY = clipYForIndex(trackIndex);
             const auto highlightColour = (leftClip.selected || rightClip.selected)
-                ? juce::Colours::gold.withAlpha(0.35f)
-                : juce::Colours::white.withAlpha(0.18f);
+                ? juce::Colours::gold.withAlpha(0.20f)
+                : juce::Colours::white.withAlpha(0.10f);
             g.setColour(highlightColour);
-            g.fillRoundedRectangle(static_cast<float>(overlapX), static_cast<float>(clipY + 14), static_cast<float>(overlapW), 20.0f, 4.0f);
+            g.fillRoundedRectangle(static_cast<float>(overlapX), static_cast<float>(clipY + 8), static_cast<float>(overlapW), 12.0f, 4.0f);
             g.setColour(highlightColour.brighter(0.3f));
-            g.drawRoundedRectangle(static_cast<float>(overlapX), static_cast<float>(clipY + 14), static_cast<float>(overlapW), 20.0f, 4.0f, 1.0f);
-            g.drawText("XF", overlapX + 4, clipY + 15, juce::jmax(18, overlapW - 8), 18, juce::Justification::centredLeft);
+            g.drawRoundedRectangle(static_cast<float>(overlapX), static_cast<float>(clipY + 8), static_cast<float>(overlapW), 12.0f, 4.0f, 1.0f);
+            g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+            g.drawText("XF", overlapX + 4, clipY + 7, juce::jmax(18, overlapW - 8), 14, juce::Justification::centredLeft);
         }
     }
 
@@ -349,20 +554,9 @@ void TimelineView::paint(juce::Graphics& g)
         g.drawRect(regionX, 28, regionW, getHeight() - 36, 1);
     }
 
-    const auto playheadTimelineSec = state.uiState.selectedClipId.empty()
-        ? state.uiState.playheadSec
-        : state.uiState.playheadSec;
-    const auto playheadX = kTimelineLeftPadding + static_cast<int>(playheadTimelineSec * pixelsPerSecond_);
-    g.setColour(transport_.isPlaying() ? juce::Colours::red : juce::Colours::orangered);
-    g.drawLine(static_cast<float>(playheadX), static_cast<float>(kHeaderHeight), static_cast<float>(playheadX), static_cast<float>(getHeight() - kFooterHeight), 2.0f);
-    g.setColour(juce::Colours::white.withAlpha(0.7f));
-    g.drawText(
-        "Playhead " + juce::String(playheadTimelineSec, 2) + "s",
-        kTimelineLeftPadding + 8,
-        getHeight() - kFooterHeight + 4,
-        180,
-        kFooterHeight - 8,
-        juce::Justification::centredLeft);
+    const auto playheadX = kTimelineLeftPadding + static_cast<int>(state.uiState.playheadSec * pixelsPerSecond_);
+    g.setColour(juce::Colour::fromRGB(255, 182, 32).withAlpha(0.95f));
+    g.drawLine(static_cast<float>(playheadX), static_cast<float>(kHeaderHeight), static_cast<float>(playheadX), static_cast<float>(getHeight() - kFooterHeight), 1.6f);
 }
 
 void TimelineView::mouseDown(const juce::MouseEvent& event)
@@ -374,17 +568,6 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
     clipMovedDuringDrag_ = false;
     clipDragMode_ = ClipDragMode::None;
     draggedClipId_.clear();
-
-    if (isRulerHit(event.getPosition()))
-    {
-        draggingPlayhead_ = true;
-        if (seekTimelineCallback_)
-        {
-            seekTimelineCallback_(xToTime(event.x));
-        }
-        repaint();
-        return;
-    }
 
     for (std::size_t i = 0; i < state.clips.size(); ++i)
     {
@@ -401,7 +584,7 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
                 menu.addItem(1, "Split At Playhead");
                 menu.addItem(2, "Delete Clip");
                 menu.showMenuAsync(
-                    juce::PopupMenu::Options().withTargetScreenArea(juce::Rectangle<int>(event.getScreenPosition(), {1, 1})),
+                    juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
                     [this](int result)
                     {
                         if (result == 1 && splitClipCallback_)
@@ -439,16 +622,6 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
 
 void TimelineView::mouseDrag(const juce::MouseEvent& event)
 {
-    if (draggingPlayhead_)
-    {
-        if (seekTimelineCallback_)
-        {
-            seekTimelineCallback_(xToTime(event.x));
-        }
-        repaint();
-        return;
-    }
-
     if (draggingClip_)
     {
         auto& state = projectManager_.state();
@@ -464,8 +637,12 @@ void TimelineView::mouseDrag(const juce::MouseEvent& event)
         switch (clipDragMode_)
         {
         case ClipDragMode::Move:
-            changed = timeline_.moveClip(state, draggedClipId_, timelineSec - clipDragOffsetSec_);
+        {
+            const auto targetTrackId = nearestTrackIdForY(event.y);
+            changed = timeline_.moveClipToTrack(state, draggedClipId_, targetTrackId, timelineSec - clipDragOffsetSec_);
+            dropHoverTrackId_ = targetTrackId;
             break;
+        }
         case ClipDragMode::TrimLeft:
             if (trimLeftCallback_)
             {
@@ -510,20 +687,10 @@ void TimelineView::mouseDrag(const juce::MouseEvent& event)
 
 void TimelineView::mouseUp(const juce::MouseEvent& event)
 {
-    if (draggingPlayhead_)
-    {
-        draggingPlayhead_ = false;
-        if (seekTimelineCallback_)
-        {
-            seekTimelineCallback_(xToTime(event.x));
-        }
-        repaint();
-        return;
-    }
-
     if (draggingClip_)
     {
         draggingClip_ = false;
+        dropHoverTrackId_.clear();
         clipDragMode_ = ClipDragMode::None;
         if (endClipDragCallback_)
         {
@@ -551,13 +718,19 @@ void TimelineView::mouseWheelMove(const juce::MouseEvent& event, const juce::Mou
 {
     if (event.mods.isCtrlDown() || event.mods.isCommandDown())
     {
+        const auto anchorSec = xToTime(event.x);
+        int anchorViewportX = event.x;
+        if (auto* viewport = findParentComponentOfClass<juce::Viewport>())
+        {
+            anchorViewportX = event.x - viewport->getViewPositionX();
+        }
         if (wheel.deltaY > 0.0f)
         {
-            zoomIn();
+            setPixelsPerSecond(pixelsPerSecond_ * 1.25, anchorSec, anchorViewportX);
         }
         else if (wheel.deltaY < 0.0f)
         {
-            zoomOut();
+            setPixelsPerSecond(pixelsPerSecond_ / 1.25, anchorSec, anchorViewportX);
         }
         return;
     }
@@ -567,8 +740,26 @@ void TimelineView::mouseWheelMove(const juce::MouseEvent& event, const juce::Mou
 
 void TimelineView::setPixelsPerSecond(double value)
 {
-    pixelsPerSecond_ = juce::jlimit(20.0, 400.0, value);
+    setPixelsPerSecond(value, std::nullopt, std::nullopt);
+}
+
+void TimelineView::setPixelsPerSecond(double value, std::optional<double> anchorTimelineSec, std::optional<int> anchorViewX)
+{
+    const auto clampedPixelsPerSecond = juce::jlimit(1.0, 500.0, value);
+    pixelsPerSecond_ = clampedPixelsPerSecond;
     updateContentSize();
+
+    if (anchorTimelineSec.has_value() && anchorViewX.has_value())
+    {
+        if (auto* viewport = findParentComponentOfClass<juce::Viewport>())
+        {
+            const auto newScrollX = juce::jmax(
+                0,
+                static_cast<int>(std::round(kTimelineLeftPadding + anchorTimelineSec.value() * clampedPixelsPerSecond - static_cast<double>(anchorViewX.value()))));
+            viewport->setViewPosition(newScrollX, viewport->getViewPositionY());
+        }
+    }
+
     repaint();
 }
 
@@ -587,6 +778,40 @@ void TimelineView::resetZoom()
     setPixelsPerSecond(100.0);
 }
 
+void TimelineView::setGridMode(TimelineGridMode mode)
+{
+    if (gridMode_ == mode)
+    {
+        return;
+    }
+
+    gridMode_ = mode;
+    repaint();
+}
+
+void TimelineView::repaintPlayheadDelta(double previousPlayheadSec, double nextPlayheadSec)
+{
+    const auto previousX = kTimelineLeftPadding + static_cast<int>(std::round(previousPlayheadSec * pixelsPerSecond_));
+    const auto nextX = kTimelineLeftPadding + static_cast<int>(std::round(nextPlayheadSec * pixelsPerSecond_));
+    const auto dirtyLeft = std::min(previousX, nextX) - 4;
+    const auto dirtyWidth = std::abs(nextX - previousX) + 8;
+    repaint(dirtyLeft, 0, juce::jmax(12, dirtyWidth), getHeight());
+}
+
+void TimelineView::setWaveformDetailScale(double value)
+{
+    const auto clampedValue = juce::jlimit(0.15, 10.0, value);
+    if (std::abs(waveformDetailScale_ - clampedValue) < 0.0001)
+    {
+        return;
+    }
+
+    waveformDetailScale_ = clampedValue;
+    waveformTileCache_.invalidateAll();
+    waveformRendererOpenGL_.invalidateAll();
+    repaint();
+}
+
 void TimelineView::updateContentSize()
 {
     const auto& state = projectManager_.state();
@@ -596,11 +821,20 @@ void TimelineView::updateContentSize()
         durationSec = std::max(durationSec, clip.startSec + clip.durationSec + 1.0);
     }
 
-    const auto viewportWidth = getParentComponent() != nullptr ? getParentComponent()->getWidth() : 0;
-    const auto viewportHeight = getParentComponent() != nullptr ? getParentComponent()->getHeight() : 0;
-    const auto contentWidth = juce::jmax(juce::jmax(2400, viewportWidth), kTimelineLeftPadding + static_cast<int>(durationSec * pixelsPerSecond_));
-    const auto naturalHeight = 70 + static_cast<int>(state.tracks.size()) * 80 + kFooterHeight;
-    const auto contentHeight = juce::jmax(juce::jmax(360, viewportHeight), naturalHeight);
+    auto* viewport = findParentComponentOfClass<juce::Viewport>();
+    auto* sizingParent = viewport != nullptr ? static_cast<juce::Component*>(viewport) : getParentComponent();
+    const auto viewportWidth = sizingParent != nullptr ? sizingParent->getWidth() : 0;
+    const auto viewportHeight = sizingParent != nullptr ? sizingParent->getHeight() : 0;
+
+    const auto contentWidth = juce::jmax(
+        juce::jmax(2400, viewportWidth),
+        kTimelineLeftPadding + static_cast<int>(durationSec * pixelsPerSecond_));
+
+    const auto naturalHeight = moon::ui::layout::trackContentHeight(static_cast<int>(state.tracks.size())) + kFooterHeight;
+    const auto contentHeight = juce::jmax(
+        juce::jmax(360, viewportHeight),
+        naturalHeight);
+
     if (getWidth() != contentWidth || getHeight() != contentHeight)
     {
         setSize(contentWidth, contentHeight);
@@ -612,14 +846,46 @@ double TimelineView::xToTime(int x) const
     return juce::jmax(0.0, (static_cast<double>(x) - static_cast<double>(kTimelineLeftPadding)) / pixelsPerSecond_);
 }
 
+std::string TimelineView::nearestTrackIdForY(int contentY) const
+{
+    const auto& tracks = projectManager_.state().tracks;
+    if (tracks.empty())
+    {
+        return {};
+    }
+
+    const auto clampedIndex = juce::jlimit(
+        0,
+        static_cast<int>(tracks.size()) - 1,
+        static_cast<int>(std::floor(static_cast<double>(contentY - moon::ui::layout::kTrackRowStartY) / static_cast<double>(moon::ui::layout::kTrackRowStep))));
+    return tracks[static_cast<std::size_t>(clampedIndex)].id;
+}
+
+double TimelineView::timeForContentX(int contentX) const
+{
+    return xToTime(contentX);
+}
+
+void TimelineView::setDropHoverTrackId(const std::string& trackId)
+{
+    if (dropHoverTrackId_ == trackId)
+    {
+        return;
+    }
+
+    dropHoverTrackId_ = trackId;
+    repaint(getLocalBounds());
+}
+
 bool TimelineView::isRulerHit(const juce::Point<int>& point) const
 {
-    return point.y >= kHeaderHeight && point.y <= (kHeaderHeight + kRulerHeight) && point.x >= kTimelineLeftPadding;
+    juce::ignoreUnused(point);
+    return false;
 }
 
 int TimelineView::clipYForIndex(int index) const
 {
-    return 30 + index * 60;
+    return moon::ui::layout::trackRowY(index);
 }
 
 juce::Rectangle<int> TimelineView::clipBounds(const moon::engine::ProjectState& state, const moon::engine::ClipInfo& clip) const
@@ -637,8 +903,8 @@ juce::Rectangle<int> TimelineView::clipBounds(const moon::engine::ProjectState& 
     return juce::Rectangle<int>(
         kTimelineLeftPadding + static_cast<int>(clip.startSec * pixelsPerSecond_),
         clipYForIndex(trackIndex),
-        juce::jmax(120, static_cast<int>(clip.durationSec * pixelsPerSecond_)),
-        48);
+        juce::jmax(18, static_cast<int>(std::round(clip.durationSec * pixelsPerSecond_))),
+        moon::ui::layout::kClipRowHeight);
 }
 
 TimelineView::ClipDragMode TimelineView::hitTestClipDragMode(const juce::Rectangle<int>& clipArea, const juce::Point<int>& point) const
@@ -679,6 +945,71 @@ moon::engine::ClipInfo* TimelineView::draggedClip(moon::engine::ProjectState& st
         }
     }
     return nullptr;
+}
+
+juce::Colour TimelineView::trackAccentForClip(const moon::engine::ProjectState& state, const moon::engine::ClipInfo& clip, bool selected) const
+{
+    int trackIndex = 0;
+    for (std::size_t i = 0; i < state.tracks.size(); ++i)
+    {
+        if (state.tracks[i].id != clip.trackId)
+        {
+            continue;
+        }
+
+        auto colour = state.tracks[i].colorHex.empty() ? defaultTrackColour(static_cast<int>(i)) : parseTrackColour(state.tracks[i].colorHex);
+        if (selected)
+        {
+            colour = colour.brighter(0.18f);
+        }
+        return colour;
+    }
+
+    return selected ? juce::Colour::fromRGB(238, 176, 55) : juce::Colour::fromRGB(45, 150, 255);
+}
+
+void TimelineView::waveformSourceUpdated(const std::string& path)
+{
+    waveformRendererOpenGL_.invalidateRevisions(waveformTileCache_.invalidateSource(path));
+    repaintWaveformSource(path);
+}
+
+void TimelineView::repaintWaveformSource(const std::string& path)
+{
+    const auto& state = projectManager_.state();
+    juce::Rectangle<int> visibleBounds = getLocalBounds();
+    if (auto* viewport = findParentComponentOfClass<juce::Viewport>())
+    {
+        visibleBounds = viewport->getViewArea();
+    }
+
+    for (const auto& clip : state.clips)
+    {
+        if (resolveAssetPath(state, clip) == path)
+        {
+            const auto clipTileBounds = waveformTileCache_.visibleTileBoundsForClip(
+                clipBounds(state, clip),
+                visibleBounds,
+                pixelsPerSecond_);
+            if (clipTileBounds.empty())
+            {
+                const auto dirtyBounds = clipBounds(state, clip).expanded(2, 2).getIntersection(visibleBounds);
+                if (!dirtyBounds.isEmpty())
+                {
+                    repaint(dirtyBounds);
+                }
+                continue;
+            }
+            for (const auto& tileBounds : clipTileBounds)
+            {
+                const auto dirtyBounds = tileBounds.expanded(2, 2).getIntersection(visibleBounds);
+                if (!dirtyBounds.isEmpty())
+                {
+                    repaint(dirtyBounds);
+                }
+            }
+        }
+    }
 }
 }
 #endif

@@ -1,46 +1,49 @@
-﻿#include "TrackListView.h"
+#include "TrackListView.h"
 
 #include <algorithm>
+#include <array>
 
 #if MOON_HAS_JUCE
 namespace moon::ui
 {
 namespace
 {
-std::string lowercase(std::string value)
+juce::Colour parseTrackColour(const std::string& colorHex)
 {
-    std::transform(
-        value.begin(),
-        value.end(),
-        value.begin(),
-        [](unsigned char c)
-        {
-            return static_cast<char>(std::tolower(c));
-        });
-    return value;
+    if (colorHex.size() == 7 && colorHex.front() == '#')
+    {
+        return juce::Colour::fromString(juce::String("ff") + juce::String(colorHex.substr(1)));
+    }
+    return juce::Colour::fromRGB(41, 149, 255);
 }
 
-juce::Colour trackAccent(const moon::engine::TrackInfo& track, bool selected)
+juce::Colour defaultTrackColour(int index)
 {
+    static constexpr std::array<juce::uint32, 8> palette{
+        0xff2d96ffu,
+        0xffff2b8au,
+        0xff18c458u,
+        0xffebc414u,
+        0xff8c66ffu,
+        0xffff8740u,
+        0xff19c2cau,
+        0xffff5e5eu};
+    return juce::Colour(palette[static_cast<std::size_t>(index) % palette.size()]);
+}
+
+juce::String colourHexString(juce::Colour colour)
+{
+    return juce::String("#") + colour.toDisplayString(false).toUpperCase();
+}
+
+juce::Colour trackAccent(const moon::engine::TrackInfo& track, bool selected, int index)
+{
+    auto accent = track.colorHex.empty() ? defaultTrackColour(index) : parseTrackColour(track.colorHex);
     if (selected)
     {
-        return juce::Colour::fromRGB(45, 150, 255);
+        accent = accent.brighter(0.16f);
     }
-
-    const auto name = lowercase(track.name);
-    if (name.find("vocal") != std::string::npos)
-    {
-        return juce::Colour::fromRGB(40, 140, 255);
-    }
-    if (name.find("drum") != std::string::npos || name.find("bass") != std::string::npos || name.find("guitar") != std::string::npos)
-    {
-        return juce::Colour::fromRGB(18, 196, 88);
-    }
-    if (name.find("key") != std::string::npos || name.find("synth") != std::string::npos || name.find("pad") != std::string::npos)
-    {
-        return juce::Colour::fromRGB(235, 196, 20);
-    }
-    return juce::Colour::fromRGB(255, 30, 120);
+    return accent;
 }
 
 std::string panLabel(double pan)
@@ -59,19 +62,31 @@ std::string panLabel(double pan)
 
 TrackListView::TrackListView(moon::engine::TimelineFacade& timeline,
                              moon::engine::ProjectManager& projectManager,
-                             std::function<void()> onTrackMixChanged)
+                             std::function<void()> onTrackMixChanged,
+                             std::function<bool(const std::string&, const std::string&)> onTrackRenamed,
+                             std::function<bool(const std::string&)> onTrackDeleted,
+                             std::function<bool(const std::string&, const std::string&)> onTrackColorChanged)
     : timeline_(timeline)
     , projectManager_(projectManager)
     , onTrackMixChanged_(std::move(onTrackMixChanged))
+    , onTrackRenamed_(std::move(onTrackRenamed))
+    , onTrackDeleted_(std::move(onTrackDeleted))
+    , onTrackColorChanged_(std::move(onTrackColorChanged))
 {
+    addAndMakeVisible(renameEditor_);
+    renameEditor_.setVisible(false);
+    renameEditor_.setColour(juce::TextEditor::backgroundColourId, juce::Colour::fromRGB(27, 31, 36));
+    renameEditor_.setColour(juce::TextEditor::outlineColourId, juce::Colour::fromRGB(65, 71, 80));
+    renameEditor_.setColour(juce::TextEditor::textColourId, juce::Colours::white.withAlpha(0.95f));
+    renameEditor_.setColour(juce::TextEditor::highlightColourId, juce::Colour::fromRGB(45, 150, 255).withAlpha(0.35f));
+    renameEditor_.onReturnKey = [this] { commitRename(); };
+    renameEditor_.onEscapeKey = [this] { cancelRename(); };
+    renameEditor_.onFocusLost = [this] { commitRename(); };
 }
 
 void TrackListView::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour::fromRGB(13, 14, 18));
-    g.setColour(juce::Colours::white.withAlpha(0.9f));
-    g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
-    g.drawText("Tracks", getLocalBounds().removeFromTop(22).reduced(8, 0), juce::Justification::centredLeft);
 
     const auto& tracks = projectManager_.state().tracks;
     for (std::size_t i = 0; i < tracks.size(); ++i)
@@ -79,7 +94,8 @@ void TrackListView::paint(juce::Graphics& g)
         const auto& track = tracks[i];
         auto row = rowBounds(static_cast<int>(i));
         const bool isSelected = track.id == projectManager_.state().uiState.selectedTrackId;
-        const auto accent = trackAccent(track, isSelected);
+        const bool isDropHover = track.id == dropHoverTrackId_;
+        const auto accent = trackAccent(track, isSelected, static_cast<int>(i));
         g.setColour(juce::Colour::fromRGB(22, 24, 29));
         g.fillRoundedRectangle(row.toFloat(), 6.0f);
         g.setColour(accent);
@@ -91,64 +107,81 @@ void TrackListView::paint(juce::Graphics& g)
             g.fillRoundedRectangle(row.toFloat(), 6.0f);
             g.setColour(juce::Colours::white);
         }
-        auto content = row.reduced(8, 5);
-        auto topRow = content.removeFromTop(18);
-        auto numberBox = topRow.removeFromLeft(17);
+        if (isDropHover)
+        {
+            g.setColour(accent.withAlpha(0.18f));
+            g.fillRoundedRectangle(row.toFloat(), 6.0f);
+            g.setColour(accent.withAlpha(0.82f));
+            g.drawRoundedRectangle(row.toFloat(), 6.0f, 1.4f);
+        }
+        auto content = row.reduced(9, 6);
+        auto topRow = content.removeFromTop(22);
+        auto numberBox = topRow.removeFromLeft(20);
         g.setColour(accent.withAlpha(0.95f));
         g.fillRoundedRectangle(numberBox.toFloat(), 4.0f);
         g.setColour(juce::Colours::black.withAlpha(0.9f));
-        g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
         g.drawText(juce::String(static_cast<int>(i) + 1), numberBox, juce::Justification::centred);
 
-        topRow.removeFromLeft(11);
+        topRow.removeFromLeft(13);
         g.setColour(juce::Colours::white.withAlpha(0.94f));
-        g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        g.drawText(track.name, topRow.removeFromLeft(70), juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        if (renamingTrackId_ != track.id)
+        {
+            g.drawText(track.name, nameBounds(rowBounds(static_cast<int>(i))), juce::Justification::centredLeft);
+        }
+
+        const auto swatchBounds = colorSwatchBounds(rowBounds(static_cast<int>(i)));
+        g.setColour(accent);
+        g.fillRoundedRectangle(swatchBounds.toFloat(), 4.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.28f));
+        g.drawRoundedRectangle(swatchBounds.toFloat(), 4.0f, 1.0f);
 
         auto muteBounds = muteButtonBounds(rowBounds(static_cast<int>(i)));
         auto soloBounds = soloButtonBounds(rowBounds(static_cast<int>(i)));
+        auto deleteBounds = deleteButtonBounds(rowBounds(static_cast<int>(i)));
         g.setColour(track.mute ? juce::Colour::fromRGB(180, 70, 70) : juce::Colour::fromRGB(56, 60, 66));
-        g.fillRoundedRectangle(muteBounds.toFloat(), 4.0f);
+        g.fillRoundedRectangle(muteBounds.toFloat(), 5.0f);
         g.setColour(juce::Colours::white);
+        g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
         g.drawText("M", muteBounds, juce::Justification::centred);
 
         g.setColour(track.solo ? juce::Colour::fromRGB(198, 164, 52) : juce::Colour::fromRGB(56, 60, 66));
-        g.fillRoundedRectangle(soloBounds.toFloat(), 4.0f);
+        g.fillRoundedRectangle(soloBounds.toFloat(), 5.0f);
         g.setColour(juce::Colours::white);
         g.drawText("S", soloBounds, juce::Justification::centred);
 
-        auto statsRow = content.removeFromTop(13);
+        g.setColour(juce::Colour::fromRGB(56, 60, 66));
+        g.fillRoundedRectangle(deleteBounds.toFloat(), 5.0f);
+        g.setColour(juce::Colours::white.withAlpha(tracks.size() > 1 ? 0.92f : 0.35f));
+        g.drawText("X", deleteBounds, juce::Justification::centred);
+
+        auto statsRow = content.removeFromTop(16);
         const auto panBounds = panSliderBounds(row);
         g.setColour(juce::Colours::lightgrey.withAlpha(0.72f));
-        g.setFont(juce::FontOptions(8.5f));
-        g.drawText("Vol " + juce::String(track.gainDb, 1), statsRow.removeFromLeft(58), juce::Justification::centredLeft);
-        g.drawText("PAN", statsRow.removeFromLeft(20), juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(9.0f));
+        g.drawText("Vol " + juce::String(track.gainDb, 1), statsRow.removeFromLeft(68), juce::Justification::centredLeft);
+        g.drawText("PAN", statsRow.removeFromLeft(24), juce::Justification::centredLeft);
         g.setColour(juce::Colour::fromRGB(48, 53, 60));
-        g.fillRoundedRectangle(panBounds.toFloat(), 5.0f);
+        g.fillRoundedRectangle(panBounds.toFloat(), 6.0f);
         g.setColour(juce::Colour::fromRGB(71, 78, 90));
-        g.drawRoundedRectangle(panBounds.toFloat(), 5.0f, 1.0f);
-        const auto panCenter = panBounds.getX() + 6 + static_cast<int>(((track.pan + 1.0) * 0.5) * static_cast<double>(juce::jmax(1, panBounds.getWidth() - 12)));
+        g.drawRoundedRectangle(panBounds.toFloat(), 6.0f, 1.0f);
+        const auto panCenter = panBounds.getX() + 8 + static_cast<int>(((track.pan + 1.0) * 0.5) * static_cast<double>(juce::jmax(1, panBounds.getWidth() - 16)));
         g.setColour(juce::Colour::fromRGB(31, 181, 235));
-        g.fillEllipse(static_cast<float>(panCenter - 3), static_cast<float>(panBounds.getCentreY() - 3), 6.0f, 6.0f);
+        g.fillEllipse(static_cast<float>(panCenter - 4), static_cast<float>(panBounds.getCentreY() - 4), 8.0f, 8.0f);
         g.setColour(juce::Colours::white.withAlpha(0.95f));
-        g.setFont(juce::FontOptions(8.0f, juce::Font::bold));
-        g.drawText(panLabel(track.pan), panBounds.withTrimmedLeft(8), juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+        g.drawText(panLabel(track.pan), panBounds.withTrimmedLeft(10), juce::Justification::centredLeft);
 
         const auto gainBounds = gainSliderBounds(row);
         g.setColour(juce::Colour::fromRGB(52, 56, 64));
-        g.fillRoundedRectangle(gainBounds.toFloat(), 3.0f);
+        g.fillRoundedRectangle(gainBounds.toFloat(), 4.0f);
 
         const auto gainNorm = juce::jlimit(0.0, 1.0, (track.gainDb + 24.0) / 30.0);
         const auto gainFill = gainBounds.withWidth(static_cast<int>(gainBounds.getWidth() * gainNorm));
         g.setColour(juce::Colour::fromRGB(18, 172, 74));
-        g.fillRoundedRectangle(gainFill.toFloat(), 3.0f);
+        g.fillRoundedRectangle(gainFill.toFloat(), 4.0f);
     }
-
-    const auto addBounds = addTrackBounds();
-    g.setColour(juce::Colour::fromRGB(18, 110, 58));
-    g.fillRoundedRectangle(addBounds.toFloat(), 5.0f);
-    g.setColour(juce::Colours::white);
-    g.drawText("+ Add Track", addBounds, juce::Justification::centred);
 }
 
 void TrackListView::mouseDown(const juce::MouseEvent& event)
@@ -183,6 +216,22 @@ void TrackListView::mouseDown(const juce::MouseEvent& event)
             return;
         }
 
+        if (deleteButtonBounds(row).contains(event.getPosition()))
+        {
+            if (onTrackDeleted_)
+            {
+                onTrackDeleted_(track.id);
+            }
+            repaint();
+            return;
+        }
+
+        if (colorSwatchBounds(row).contains(event.getPosition()))
+        {
+            showTrackColorMenu(track, colorSwatchBounds(row));
+            return;
+        }
+
         if (gainSliderBounds(row).expanded(0, 6).contains(event.getPosition()))
         {
             applyTrackGainFromPosition(state.tracks[i], event.x, gainSliderBounds(row));
@@ -213,13 +262,25 @@ void TrackListView::mouseDown(const juce::MouseEvent& event)
         repaint();
         return;
     }
+}
 
-    if (addTrackBounds().contains(event.getPosition()))
+void TrackListView::mouseDoubleClick(const juce::MouseEvent& event)
+{
+    auto& state = projectManager_.state();
+    for (std::size_t i = 0; i < state.tracks.size(); ++i)
     {
-        const auto trackName = "Track " + std::to_string(state.tracks.size() + 1);
-        timeline_.ensureTrack(state, trackName);
-        projectManager_.saveProject();
-        repaint();
+        const auto row = rowBounds(static_cast<int>(i));
+        if (!row.contains(event.getPosition()))
+        {
+            continue;
+        }
+
+        const auto& track = state.tracks[i];
+        if (nameBounds(row).contains(event.getPosition()))
+        {
+            beginRename(track, static_cast<int>(i));
+            return;
+        }
     }
 }
 
@@ -268,34 +329,63 @@ void TrackListView::mouseUp(const juce::MouseEvent&)
     dragTrackId_.clear();
 }
 
+void TrackListView::resized()
+{
+    if (renamingRowIndex_ >= 0)
+    {
+        renameEditor_.setBounds(nameBounds(rowBounds(renamingRowIndex_)).reduced(0, 1));
+    }
+}
+
+void TrackListView::setDropHoverTrackId(const std::string& trackId)
+{
+    if (dropHoverTrackId_ == trackId)
+    {
+        return;
+    }
+
+    dropHoverTrackId_ = trackId;
+    repaint();
+}
+
 juce::Rectangle<int> TrackListView::rowBounds(int rowIndex) const
 {
-    return {4, 28 + rowIndex * 60, getWidth() - 8, 54};
+    return {4, moon::ui::layout::trackRowY(rowIndex), getWidth() - 8, moon::ui::layout::kTrackRowHeight};
 }
 
 juce::Rectangle<int> TrackListView::muteButtonBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getRight() - 48, row.getY() + 6, 17, 17};
+    return {row.getRight() - 56, row.getY() + 6, 20, 20};
 }
 
 juce::Rectangle<int> TrackListView::soloButtonBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getRight() - 27, row.getY() + 6, 17, 17};
+    return {row.getRight() - 31, row.getY() + 6, 20, 20};
+}
+
+juce::Rectangle<int> TrackListView::deleteButtonBounds(const juce::Rectangle<int>& row) const
+{
+    return {row.getRight() - 81, row.getY() + 6, 20, 20};
+}
+
+juce::Rectangle<int> TrackListView::nameBounds(const juce::Rectangle<int>& row) const
+{
+    return {row.getX() + 42, row.getY() + 5, row.getWidth() - 148, 22};
+}
+
+juce::Rectangle<int> TrackListView::colorSwatchBounds(const juce::Rectangle<int>& row) const
+{
+    return {row.getX() + 25, row.getY() + 6, 10, 20};
 }
 
 juce::Rectangle<int> TrackListView::gainSliderBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getX() + 8, row.getBottom() - 12, row.getWidth() - 16, 6};
+    return {row.getX() + 9, row.getBottom() - 14, row.getWidth() - 18, 8};
 }
 
 juce::Rectangle<int> TrackListView::panSliderBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getRight() - 58, row.getY() + 23, 50, 10};
-}
-
-juce::Rectangle<int> TrackListView::addTrackBounds() const
-{
-    return {8, getHeight() - 42, getWidth() - 16, 32};
+    return {row.getRight() - 68, row.getY() + 34, 58, 12};
 }
 
 void TrackListView::applyTrackGainFromPosition(moon::engine::TrackInfo& track, int x, const juce::Rectangle<int>& bounds)
@@ -308,6 +398,105 @@ void TrackListView::applyTrackPanFromPosition(moon::engine::TrackInfo& track, in
 {
     const auto ratio = juce::jlimit(0.0, 1.0, static_cast<double>(x - bounds.getX()) / static_cast<double>(juce::jmax(1, bounds.getWidth())));
     track.pan = -1.0 + ratio * 2.0;
+}
+
+void TrackListView::beginRename(const moon::engine::TrackInfo& track, int rowIndex)
+{
+    renamingTrackId_ = track.id;
+    renameOriginalName_ = track.name;
+    renamingRowIndex_ = rowIndex;
+    renameEditor_.setText(track.name, juce::dontSendNotification);
+    renameEditor_.setBounds(nameBounds(rowBounds(rowIndex)).reduced(0, 1));
+    renameEditor_.setVisible(true);
+    renameEditor_.grabKeyboardFocus();
+    renameEditor_.selectAll();
+    repaint();
+}
+
+void TrackListView::commitRename()
+{
+    if (renamingTrackId_.empty())
+    {
+        return;
+    }
+
+    auto replacement = renameEditor_.getText().trim().toStdString();
+    if (replacement.empty())
+    {
+        replacement = renameOriginalName_;
+    }
+
+    if (onTrackRenamed_)
+    {
+        onTrackRenamed_(renamingTrackId_, replacement);
+    }
+
+    renameEditor_.setVisible(false);
+    renamingTrackId_.clear();
+    renameOriginalName_.clear();
+    renamingRowIndex_ = -1;
+    repaint();
+}
+
+void TrackListView::cancelRename()
+{
+    if (renamingTrackId_.empty())
+    {
+        return;
+    }
+
+    renameEditor_.setVisible(false);
+    renamingTrackId_.clear();
+    renameOriginalName_.clear();
+    renamingRowIndex_ = -1;
+    repaint();
+}
+
+void TrackListView::showTrackColorMenu(const moon::engine::TrackInfo& track, const juce::Rectangle<int>& swatchBounds)
+{
+    struct PaletteEntry
+    {
+        int id;
+        const char* label;
+        juce::Colour colour;
+    };
+
+    static const std::array<PaletteEntry, 7> palette{{
+        {1, "Blue", juce::Colour::fromRGB(45, 150, 255)},
+        {2, "Magenta", juce::Colour::fromRGB(255, 43, 138)},
+        {3, "Green", juce::Colour::fromRGB(24, 196, 88)},
+        {4, "Amber", juce::Colour::fromRGB(235, 196, 20)},
+        {5, "Purple", juce::Colour::fromRGB(140, 102, 255)},
+        {6, "Orange", juce::Colour::fromRGB(255, 135, 64)},
+        {7, "Teal", juce::Colour::fromRGB(25, 194, 202)},
+    }};
+
+    juce::PopupMenu menu;
+    for (const auto& entry : palette)
+    {
+        menu.addItem(entry.id, entry.label);
+    }
+
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetScreenArea(swatchBounds.translated(getScreenX(), getScreenY())),
+        [this, trackId = track.id](int result)
+        {
+            if (result <= 0 || !onTrackColorChanged_)
+            {
+                return;
+            }
+
+            static const std::array<juce::Colour, 7> colours{
+                juce::Colour::fromRGB(45, 150, 255),
+                juce::Colour::fromRGB(255, 43, 138),
+                juce::Colour::fromRGB(24, 196, 88),
+                juce::Colour::fromRGB(235, 196, 20),
+                juce::Colour::fromRGB(140, 102, 255),
+                juce::Colour::fromRGB(255, 135, 64),
+                juce::Colour::fromRGB(25, 194, 202)};
+            onTrackColorChanged_(trackId, colourHexString(colours[static_cast<std::size_t>(result - 1)]).toStdString());
+            repaint();
+        });
 }
 }
 #endif

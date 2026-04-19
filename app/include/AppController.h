@@ -9,6 +9,7 @@
 #include "AIJobClient.h"
 #include "EngineRuntimeCoordinator.h"
 #include "ExportService.h"
+#include "LocalJobClient.h"
 #include "Logger.h"
 #include "ClipOperations.h"
 #include "ProjectManager.h"
@@ -31,6 +32,7 @@ public:
     bool restoreAutosave(const std::string& projectRootPath);
     bool saveProject();
     bool importAudio(const std::string& audioPath);
+    bool importAudioToTrack(const std::string& audioPath, const std::string& trackId, double startSec);
     bool separateStemsForSelectedClip();
     bool rewriteSelectedRegion(const std::string& prompt);
     bool addGeneratedLayer(const std::string& prompt);
@@ -49,10 +51,14 @@ public:
     bool createCrossfadeWithPrevious(double overlapSec);
     bool createCrossfadeWithNext(double overlapSec);
     bool moveClipOnTimeline(const std::string& clipId, double newStartSec);
+    bool moveClipToTrack(const std::string& clipId, const std::string& trackId, double newStartSec);
     void beginInteractiveTimelineEdit();
     void finishInteractiveTimelineEdit(bool changed, bool syncTransportToSelectionAfterEdit = true);
     bool toggleTrackMute(const std::string& trackId);
     bool toggleTrackSolo(const std::string& trackId);
+    bool renameTrack(const std::string& trackId, const std::string& newName);
+    bool deleteTrack(const std::string& trackId);
+    bool setTrackColor(const std::string& trackId, const std::string& colorHex);
     void playTransport();
     void pauseTransport();
     void stopTransport();
@@ -67,6 +73,7 @@ public:
     bool canCloseSafely() const;
     void prepareForShutdown();
     bool refreshBackendStatus();
+    void setBackendUrl(const std::string& backendUrl);
     bool rebuildPreviewPlayback();
     void maintainPreviewPlayback();
     void notifyProjectMixChanged();
@@ -76,6 +83,10 @@ public:
     void clearStartupNotice();
     double projectPlaybackDurationSec() const;
     double projectTempo() const noexcept { return projectManager_->state().tempo; }
+    int projectTimeSignatureNumerator() const noexcept { return projectManager_->state().timeSignatureNumerator; }
+    int projectTimeSignatureDenominator() const noexcept { return projectManager_->state().timeSignatureDenominator; }
+    bool setProjectTempo(double tempo);
+    bool setProjectTimeSignature(int numerator, int denominator);
     bool hasUnsavedChanges() const noexcept { return projectDirty_; }
     bool hasStalePreview() const noexcept { return previewPlaybackDirty_; }
     std::optional<std::string> projectFilePath() const;
@@ -103,7 +114,7 @@ private:
     std::unique_ptr<moon::engine::TransportFacade> transport_;
     std::unique_ptr<moon::engine::WaveformService> waveformService_;
     std::unique_ptr<moon::engine::ExportService> exportService_;
-    std::unique_ptr<moon::engine::AIJobClient> aiJobClient_;
+    std::unique_ptr<moon::engine::JobClientProtocol> aiJobClient_;
     std::unique_ptr<moon::engine::TaskManager> taskManager_;
     bool previewPlaybackActive_{false};
     bool previewPlaybackDirty_{true};

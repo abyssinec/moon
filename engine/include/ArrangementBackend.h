@@ -38,6 +38,7 @@ public:
                                             const std::string& prompt,
                                             const std::string& cacheKey) = 0;
     virtual bool moveClip(ProjectState& state, const std::string& clipId, double newStartSec) = 0;
+    virtual bool moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec) = 0;
     virtual bool toggleTrackMute(ProjectState& state, const std::string& trackId) = 0;
     virtual bool toggleTrackSolo(ProjectState& state, const std::string& trackId) = 0;
 };

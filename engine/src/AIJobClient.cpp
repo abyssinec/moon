@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <utility>
@@ -98,12 +99,80 @@ std::string jsonEscape(const std::string& text)
     }
     return result;
 }
+
+struct BackendEndpoint
+{
+    std::wstring host{L"127.0.0.1"};
+    INTERNET_PORT port{8000};
+    std::wstring basePath;
+};
+
+BackendEndpoint parseBackendEndpoint(const std::string& backendUrl)
+{
+    BackendEndpoint endpoint;
+    std::string remaining = backendUrl;
+    if (remaining.rfind("http://", 0) == 0)
+    {
+        remaining = remaining.substr(7);
+    }
+    else if (remaining.rfind("https://", 0) == 0)
+    {
+        remaining = remaining.substr(8);
+    }
+
+    auto slashPos = remaining.find('/');
+    std::string authority = slashPos == std::string::npos ? remaining : remaining.substr(0, slashPos);
+    std::string basePath = slashPos == std::string::npos ? "" : remaining.substr(slashPos);
+
+    auto colonPos = authority.rfind(':');
+    if (colonPos != std::string::npos)
+    {
+        endpoint.host = widen(authority.substr(0, colonPos));
+        const auto portText = authority.substr(colonPos + 1);
+        const auto parsedPort = std::stoi(portText);
+        endpoint.port = static_cast<INTERNET_PORT>(std::clamp(parsedPort, 1, 65535));
+    }
+    else if (!authority.empty())
+    {
+        endpoint.host = widen(authority);
+    }
+
+    if (!basePath.empty() && basePath != "/")
+    {
+        endpoint.basePath = widen(basePath);
+    }
+    return endpoint;
+}
+
+std::wstring combineRequestPath(const BackendEndpoint& endpoint, const std::string& path)
+{
+    std::wstring requestPath = endpoint.basePath.empty() ? L"" : endpoint.basePath;
+    if (requestPath.empty())
+    {
+        requestPath = widen(path);
+    }
+    else
+    {
+        if (requestPath.back() == L'/' && !path.empty() && path.front() == '/')
+        {
+            requestPath.pop_back();
+        }
+        requestPath += widen(path);
+    }
+    return requestPath;
+}
 }
 
 AIJobClient::AIJobClient(std::string backendUrl, Logger& logger)
     : backendUrl_(std::move(backendUrl))
     , logger_(logger)
 {
+}
+
+void AIJobClient::setBackendUrl(std::string backendUrl)
+{
+    backendUrl_ = std::move(backendUrl);
+    backendReachable_ = false;
 }
 
 HealthResponse AIJobClient::healthCheck() const
@@ -279,8 +348,8 @@ JobResultResponse AIJobClient::getJobResult(const std::string& jobId) const
 std::optional<std::string> AIJobClient::httpGet(const std::string& path) const
 {
 #if defined(_WIN32)
-    const auto host = widen("127.0.0.1");
-    const auto requestPath = widen(path);
+    const auto endpoint = parseBackendEndpoint(backendUrl_);
+    const auto requestPath = combineRequestPath(endpoint, path);
 
     HINTERNET session = WinHttpOpen(L"MoonAudioEditor/0.1",
                                     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -292,7 +361,9 @@ std::optional<std::string> AIJobClient::httpGet(const std::string& path) const
         return std::nullopt;
     }
 
-    HINTERNET connection = WinHttpConnect(session, host.c_str(), 8000, 0);
+    WinHttpSetTimeouts(session, 250, 250, 500, 500);
+
+    HINTERNET connection = WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0);
     if (connection == nullptr)
     {
         WinHttpCloseHandle(session);
@@ -357,8 +428,8 @@ std::optional<std::string> AIJobClient::httpGet(const std::string& path) const
 std::optional<std::string> AIJobClient::httpPost(const std::string& path, const std::string& jsonBody) const
 {
 #if defined(_WIN32)
-    const auto host = widen("127.0.0.1");
-    const auto requestPath = widen(path);
+    const auto endpoint = parseBackendEndpoint(backendUrl_);
+    const auto requestPath = combineRequestPath(endpoint, path);
     const auto headers = widen("Content-Type: application/json\r\n");
 
     HINTERNET session = WinHttpOpen(L"MoonAudioEditor/0.1",
@@ -371,7 +442,9 @@ std::optional<std::string> AIJobClient::httpPost(const std::string& path, const 
         return std::nullopt;
     }
 
-    HINTERNET connection = WinHttpConnect(session, host.c_str(), 8000, 0);
+    WinHttpSetTimeouts(session, 250, 250, 500, 500);
+
+    HINTERNET connection = WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0);
     if (connection == nullptr)
     {
         WinHttpCloseHandle(session);

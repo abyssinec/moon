@@ -1,4 +1,4 @@
-﻿set(MOON_APP_SOURCES
+set(MOON_APP_SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/MainComponent.cpp
@@ -23,6 +23,7 @@ if (JUCE_FOUND)
             juce::juce_gui_extra
             juce::juce_audio_utils
             juce::juce_audio_formats
+            juce::juce_opengl
     )
 else()
     add_executable(moon_audio_editor src/main.cpp src/AppController.cpp ${MOON_APP_HEADERS})

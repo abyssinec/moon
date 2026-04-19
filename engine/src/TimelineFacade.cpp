@@ -1,6 +1,7 @@
 #include "TimelineFacade.h"
 
 #include <algorithm>
+#include <unordered_set>
 
 namespace moon::engine
 {
@@ -99,6 +100,140 @@ void TimelineFacade::clearSelectedRegion(ProjectState& state)
 bool TimelineFacade::moveClip(ProjectState& state, const std::string& clipId, double newStartSec)
 {
     return backend_->moveClip(state, clipId, newStartSec);
+}
+
+bool TimelineFacade::moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec)
+{
+    return backend_->moveClipToTrack(state, clipId, trackId, newStartSec);
+}
+
+bool TimelineFacade::renameTrack(ProjectState& state, const std::string& trackId, const std::string& newName)
+{
+    for (auto& track : state.tracks)
+    {
+        if (track.id != trackId)
+        {
+            continue;
+        }
+
+        if (track.name == newName)
+        {
+            return false;
+        }
+
+        track.name = newName;
+        logger_.info("Renamed track " + track.id + " to " + newName);
+        return true;
+    }
+
+    return false;
+}
+
+bool TimelineFacade::deleteTrack(ProjectState& state, const std::string& trackId)
+{
+    if (state.tracks.size() <= 1)
+    {
+        return false;
+    }
+
+    const auto trackIt = std::find_if(
+        state.tracks.begin(),
+        state.tracks.end(),
+        [&trackId](const TrackInfo& track)
+        {
+            return track.id == trackId;
+        });
+    if (trackIt == state.tracks.end())
+    {
+        return false;
+    }
+
+    bool removedAnyClip = false;
+    state.clips.erase(
+        std::remove_if(
+            state.clips.begin(),
+            state.clips.end(),
+            [&trackId, &removedAnyClip](const ClipInfo& clip)
+            {
+                if (clip.trackId == trackId)
+                {
+                    removedAnyClip = true;
+                    return true;
+                }
+                return false;
+            }),
+        state.clips.end());
+
+    state.tracks.erase(trackIt);
+
+    std::unordered_set<std::string> usedAssetIds;
+    for (const auto& clip : state.clips)
+    {
+        usedAssetIds.insert(clip.assetId);
+    }
+
+    for (auto it = state.sourceAssets.begin(); it != state.sourceAssets.end();)
+    {
+        if (!usedAssetIds.contains(it->first))
+        {
+            it = state.sourceAssets.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for (auto it = state.generatedAssets.begin(); it != state.generatedAssets.end();)
+    {
+        if (!usedAssetIds.contains(it->first))
+        {
+            it = state.generatedAssets.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    if (state.uiState.selectedTrackId == trackId)
+    {
+        state.uiState.selectedTrackId = state.tracks.empty() ? std::string{} : state.tracks.front().id;
+    }
+    if (state.uiState.selectedClipId.empty()
+        || std::none_of(state.clips.begin(), state.clips.end(), [&state](const ClipInfo& clip) { return clip.id == state.uiState.selectedClipId; }))
+    {
+        state.uiState.selectedClipId.clear();
+        for (auto& clip : state.clips)
+        {
+            clip.selected = false;
+        }
+    }
+
+    logger_.info("Deleted track " + trackId + (removedAnyClip ? " with clips" : ""));
+    return true;
+}
+
+bool TimelineFacade::setTrackColor(ProjectState& state, const std::string& trackId, const std::string& colorHex)
+{
+    for (auto& track : state.tracks)
+    {
+        if (track.id != trackId)
+        {
+            continue;
+        }
+
+        if (track.colorHex == colorHex)
+        {
+            return false;
+        }
+
+        track.colorHex = colorHex;
+        logger_.info("Changed track color " + track.id + " to " + colorHex);
+        return true;
+    }
+
+    return false;
 }
 
 bool TimelineFacade::toggleTrackMute(ProjectState& state, const std::string& trackId)

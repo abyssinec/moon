@@ -1,0 +1,51 @@
+#pragma once
+
+#include <unordered_map>
+#include <string>
+
+#include "AIJobClient.h"
+
+namespace moon::engine
+{
+class LocalJobClient final : public JobClientProtocol
+{
+public:
+    LocalJobClient(std::string backendUrl, Logger& logger);
+
+    void setBackendUrl(std::string backendUrl) override;
+    HealthResponse healthCheck() const override;
+    ModelsResponse models() const override;
+    std::string createStemsJob(const std::string& inputAudioPath, const std::string& modelName) override;
+    std::string createRewriteJob(const std::string& inputAudioPath,
+                                 const std::string& prompt,
+                                 const std::string& modelName,
+                                 double durationSec) override;
+    std::string createAddLayerJob(const std::string& inputAudioPath,
+                                  const std::string& prompt,
+                                  const std::string& modelName,
+                                  double durationSec) override;
+    JobStatusResponse getJob(const std::string& jobId) override;
+    JobResultResponse getJobResult(const std::string& jobId) const override;
+    bool backendReachable() const noexcept override { return true; }
+    const std::string& backendUrl() const noexcept override { return backendUrl_; }
+
+private:
+    struct LocalJob
+    {
+        JobStatusResponse status;
+        JobResultResponse result;
+    };
+
+    std::string createJob(const std::string& type,
+                          const std::string& inputAudioPath,
+                          const std::string& modelName,
+                          const std::string& prompt,
+                          double durationSec);
+    ModelsResponse detectModels() const;
+
+    std::string backendUrl_;
+    Logger& logger_;
+    std::unordered_map<std::string, LocalJob> jobs_;
+    int nextJobId_{1};
+};
+}

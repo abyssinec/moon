@@ -39,26 +39,50 @@ struct JobResultResponse
     std::string outputAudioPath;
 };
 
-class AIJobClient
+class JobClientProtocol
+{
+public:
+    virtual ~JobClientProtocol() = default;
+
+    virtual void setBackendUrl(std::string backendUrl) = 0;
+    virtual HealthResponse healthCheck() const = 0;
+    virtual ModelsResponse models() const = 0;
+    virtual std::string createStemsJob(const std::string& inputAudioPath, const std::string& modelName) = 0;
+    virtual std::string createRewriteJob(const std::string& inputAudioPath,
+                                         const std::string& prompt,
+                                         const std::string& modelName,
+                                         double durationSec) = 0;
+    virtual std::string createAddLayerJob(const std::string& inputAudioPath,
+                                          const std::string& prompt,
+                                          const std::string& modelName,
+                                          double durationSec) = 0;
+    virtual JobStatusResponse getJob(const std::string& jobId) = 0;
+    virtual JobResultResponse getJobResult(const std::string& jobId) const = 0;
+    virtual bool backendReachable() const noexcept = 0;
+    virtual const std::string& backendUrl() const noexcept = 0;
+};
+
+class AIJobClient : public JobClientProtocol
 {
 public:
     AIJobClient(std::string backendUrl, Logger& logger);
+    void setBackendUrl(std::string backendUrl) override;
 
-    HealthResponse healthCheck() const;
-    ModelsResponse models() const;
-    std::string createStemsJob(const std::string& inputAudioPath, const std::string& modelName);
+    HealthResponse healthCheck() const override;
+    ModelsResponse models() const override;
+    std::string createStemsJob(const std::string& inputAudioPath, const std::string& modelName) override;
     std::string createRewriteJob(const std::string& inputAudioPath,
                                  const std::string& prompt,
                                  const std::string& modelName,
-                                 double durationSec);
+                                 double durationSec) override;
     std::string createAddLayerJob(const std::string& inputAudioPath,
                                   const std::string& prompt,
                                   const std::string& modelName,
-                                  double durationSec);
-    JobStatusResponse getJob(const std::string& jobId);
-    JobResultResponse getJobResult(const std::string& jobId) const;
-    bool backendReachable() const noexcept { return backendReachable_; }
-    const std::string& backendUrl() const noexcept { return backendUrl_; }
+                                  double durationSec) override;
+    JobStatusResponse getJob(const std::string& jobId) override;
+    JobResultResponse getJobResult(const std::string& jobId) const override;
+    bool backendReachable() const noexcept override { return backendReachable_; }
+    const std::string& backendUrl() const noexcept override { return backendUrl_; }
 
 private:
     struct LocalJob

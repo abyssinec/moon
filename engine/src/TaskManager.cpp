@@ -7,7 +7,7 @@
 
 namespace moon::engine
 {
-TaskManager::TaskManager(AIJobClient& client, Logger& logger)
+TaskManager::TaskManager(JobClientProtocol& client, Logger& logger)
     : client_(client)
     , logger_(logger)
 {

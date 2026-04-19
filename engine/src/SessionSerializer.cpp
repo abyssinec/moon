@@ -20,6 +20,8 @@ bool SessionSerializer::save(const ProjectState& state, const std::filesystem::p
     out << "  \"project_name\": \"" << escape(state.projectName) << "\",\n";
     out << "  \"sample_rate\": " << state.sampleRate << ",\n";
     out << "  \"tempo\": " << state.tempo << ",\n";
+    out << "  \"time_signature_numerator\": " << state.timeSignatureNumerator << ",\n";
+    out << "  \"time_signature_denominator\": " << state.timeSignatureDenominator << ",\n";
     out << "  \"assets\": {\n";
     out << "    \"sources\": [\n";
 
@@ -62,7 +64,10 @@ bool SessionSerializer::save(const ProjectState& state, const std::filesystem::p
         const auto& track = state.tracks[i];
         out << "    {\"id\": \"" << escape(track.id)
             << "\", \"name\": \"" << escape(track.name)
-            << "\", \"gain_db\": " << track.gainDb
+            << "\", \"color\": \"" << escape(track.colorHex)
+            << "\", \"mute\": " << (track.mute ? "true" : "false")
+            << ", \"solo\": " << (track.solo ? "true" : "false")
+            << ", \"gain_db\": " << track.gainDb
             << ", \"pan\": " << track.pan
             << "}";
         if (i + 1 < state.tracks.size())
@@ -131,6 +136,8 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     state.projectName = extractString(content, "project_name", "Untitled");
     state.sampleRate = extractInt(content, "sample_rate", 44100);
     state.tempo = extractDouble(content, "tempo", 120.0);
+    state.timeSignatureNumerator = extractInt(content, "time_signature_numerator", 4);
+    state.timeSignatureDenominator = extractInt(content, "time_signature_denominator", 4);
     state.uiState.zoom = extractDouble(content, "zoom", 1.0);
     state.uiState.playheadSec = extractDouble(content, "playhead_sec", 0.0);
     state.uiState.selectedClipId = extractString(content, "selected_clip_id", {});
@@ -145,7 +152,7 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     state.engineState.tracktionRuntimeReady = extractBool(content, "tracktion_runtime_ready", false);
 
     const auto tracksArray = extractArray(content, "tracks");
-    const std::regex trackExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"name\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"gain_db\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?),\\s*\"pan\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?))?\\}");
+    const std::regex trackExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"name\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"color\"\\s*:\\s*\"([^\"]*)\")?(?:,\\s*\"mute\"\\s*:\\s*(true|false),\\s*\"solo\"\\s*:\\s*(true|false))?,\\s*\"gain_db\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?),\\s*\"pan\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)\\}");
     for (std::sregex_iterator it(tracksArray.begin(), tracksArray.end(), trackExpr), end; it != end; ++it)
     {
         TrackInfo track;
@@ -153,11 +160,23 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
         track.name = (*it)[2].str();
         if ((*it)[3].matched)
         {
-            track.gainDb = std::stod((*it)[3].str());
+            track.colorHex = (*it)[3].str();
         }
         if ((*it)[4].matched)
         {
-            track.pan = std::stod((*it)[4].str());
+            track.mute = ((*it)[4].str() == "true");
+        }
+        if ((*it)[5].matched)
+        {
+            track.solo = ((*it)[5].str() == "true");
+        }
+        if ((*it)[6].matched)
+        {
+            track.gainDb = std::stod((*it)[6].str());
+        }
+        if ((*it)[7].matched)
+        {
+            track.pan = std::stod((*it)[7].str());
         }
         state.tracks.push_back(track);
     }

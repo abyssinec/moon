@@ -1,4 +1,4 @@
-﻿#include "TransportFacade.h"
+#include "TransportFacade.h"
 
 #include <algorithm>
 #include <cmath>

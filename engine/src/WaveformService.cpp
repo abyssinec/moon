@@ -1,157 +1,301 @@
 #include "WaveformService.h"
+#include "WaveformDiskCache.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdint>
-#include <fstream>
 
 namespace moon::engine
 {
 WaveformService::WaveformService(Logger& logger)
     : logger_(logger)
+    , analyzer_(logger)
+    , persistentCache_(std::make_unique<WaveformDiskCache>(logger))
 {
+}
+
+WaveformService::~WaveformService()
+{
+#if MOON_HAS_JUCE
+    cancelPendingUpdate();
+    analysisPool_.removeAllJobs(true, 4000);
+#endif
 }
 
 void WaveformService::markRequested(const std::string& path)
 {
-    ready_.try_emplace(path, loadWavData(path));
-    logger_.info("Waveform marked ready for " + path);
+    requestWaveform(path);
 }
 
-const WaveformData& WaveformService::requestWaveform(const std::string& path)
+void WaveformService::requestWaveform(const std::string& path)
 {
-    const auto [it, inserted] = ready_.try_emplace(path, loadWavData(path));
-    if (inserted)
+    if (path.empty())
     {
-        logger_.info("Loaded waveform for " + path);
+        return;
     }
-    return it->second;
+
+#if !MOON_HAS_JUCE
+    std::scoped_lock lock(mutex_);
+    auto& entry = ensureEntryLocked(path);
+    if (entry.snapshot.status == Status::Ready)
+    {
+        return;
+    }
+    entry.snapshot.data = analyzer_.analyzeFile(path);
+    entry.snapshot.status = entry.snapshot.data != nullptr ? Status::Ready : Status::Failed;
+    entry.snapshot.revision += 1;
+    return;
+#else
+    std::scoped_lock lock(mutex_);
+    auto& entry = ensureEntryLocked(path);
+    entry.lastUse = ++useCounter_;
+    if (entry.snapshot.status == Status::Ready || entry.queued)
+    {
+        return;
+    }
+
+    entry.snapshot.status = Status::Loading;
+    entry.snapshot.errorMessage.clear();
+    entry.queued = true;
+    analysisPool_.addJob(new AnalysisJob(*this, path), true);
+#endif
 }
 
 bool WaveformService::hasWaveform(const std::string& path) const
 {
-    return ready_.find(path) != ready_.end();
+    return static_cast<bool>(tryGetWaveform(path));
 }
 
-std::optional<WaveformData> WaveformService::tryGetWaveform(const std::string& path) const
+WaveformDataPtr WaveformService::tryGetWaveform(const std::string& path) const
 {
-    const auto it = ready_.find(path);
-    if (it == ready_.end())
+    std::scoped_lock lock(mutex_);
+    const auto it = entries_.find(path);
+    if (it == entries_.end())
     {
-        return std::nullopt;
+        return {};
     }
-    return it->second;
+    const_cast<Entry&>(it->second).lastUse = ++const_cast<WaveformService*>(this)->useCounter_;
+    return it->second.snapshot.data;
+}
+
+WaveformService::Snapshot WaveformService::snapshotFor(const std::string& path) const
+{
+    std::scoped_lock lock(mutex_);
+    const auto it = entries_.find(path);
+    if (it == entries_.end())
+    {
+        return {};
+    }
+    const_cast<Entry&>(it->second).lastUse = ++const_cast<WaveformService*>(this)->useCounter_;
+    return it->second.snapshot;
 }
 
 double WaveformService::durationFor(const std::string& path)
 {
-    return requestWaveform(path).durationSec;
+    requestWaveform(path);
+    const auto waveform = tryGetWaveform(path);
+    return waveform != nullptr ? waveform->durationSec : 0.0;
 }
 
-WaveformData WaveformService::loadWavData(const std::string& path)
+std::uint64_t WaveformService::revisionFor(const std::string& path) const
 {
-    WaveformData result;
-    result.peaks.assign(4096, 0.0f);
-    result.mins.assign(4096, 1.0f);
-    result.maxs.assign(4096, -1.0f);
-
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-    {
-        logger_.error("Unable to open waveform source: " + path);
-        return result;
-    }
-
-    std::array<char, 4> chunkId{};
-    in.read(chunkId.data(), 4);
-    if (std::string(chunkId.data(), 4) != "RIFF")
-    {
-        logger_.error("Unsupported audio format (expected RIFF/WAV): " + path);
-        return result;
-    }
-
-    in.seekg(22, std::ios::beg);
-    std::uint16_t channels = 0;
-    std::uint32_t sampleRate = 44100;
-    std::uint16_t bitsPerSample = 16;
-    in.read(reinterpret_cast<char*>(&channels), sizeof(channels));
-    in.read(reinterpret_cast<char*>(&sampleRate), sizeof(sampleRate));
-    in.seekg(34, std::ios::beg);
-    in.read(reinterpret_cast<char*>(&bitsPerSample), sizeof(bitsPerSample));
-
-    in.seekg(12, std::ios::beg);
-    std::uint32_t dataSize = 0;
-    while (in && !in.eof())
-    {
-        std::array<char, 4> id{};
-        std::uint32_t size = 0;
-        in.read(id.data(), 4);
-        in.read(reinterpret_cast<char*>(&size), sizeof(size));
-        if (!in)
-        {
-            break;
-        }
-
-        if (std::string(id.data(), 4) == "data")
-        {
-            dataSize = size;
-            break;
-        }
-
-        in.seekg(size, std::ios::cur);
-    }
-
-    if (dataSize == 0 || bitsPerSample != 16 || channels == 0)
-    {
-        logger_.error("Unsupported or empty WAV payload: " + path);
-        return result;
-    }
-
-    result.sampleRate = static_cast<int>(sampleRate);
-    result.channelCount = static_cast<int>(channels);
-    const std::uint32_t bytesPerFrame = channels * sizeof(std::int16_t);
-    const std::uint32_t frameCount = dataSize / bytesPerFrame;
-    result.durationSec = frameCount > 0 ? static_cast<double>(frameCount) / static_cast<double>(sampleRate) : 0.0;
-
-    std::vector<std::int16_t> samples(frameCount * channels);
-    in.read(reinterpret_cast<char*>(samples.data()), static_cast<std::streamsize>(dataSize));
-    if (!in)
-    {
-        logger_.error("Failed to read sample data from: " + path);
-        return result;
-    }
-
-    const std::size_t bucketCount = result.peaks.size();
-    for (std::uint32_t frame = 0; frame < frameCount; ++frame)
-    {
-        float maxValue = 0.0f;
-        float maxSigned = -1.0f;
-        float minSigned = 1.0f;
-        for (std::uint16_t channel = 0; channel < channels; ++channel)
-        {
-            const auto sample = samples[frame * channels + channel];
-            const auto normalized = static_cast<float>(sample) / 32768.0f;
-            maxValue = std::max(maxValue, std::abs(normalized));
-            maxSigned = std::max(maxSigned, normalized);
-            minSigned = std::min(minSigned, normalized);
-        }
-
-        const auto bucket = std::min<std::size_t>(bucketCount - 1, (static_cast<std::size_t>(frame) * bucketCount) / std::max<std::uint32_t>(1, frameCount));
-        result.peaks[bucket] = std::max(result.peaks[bucket], maxValue);
-        result.maxs[bucket] = std::max(result.maxs[bucket], maxSigned);
-        result.mins[bucket] = std::min(result.mins[bucket], minSigned);
-    }
-
-    for (std::size_t bucket = 0; bucket < bucketCount; ++bucket)
-    {
-        if (result.maxs[bucket] < result.mins[bucket])
-        {
-            result.maxs[bucket] = 0.0f;
-            result.mins[bucket] = 0.0f;
-        }
-    }
-
-    return result;
+    return snapshotFor(path).revision;
 }
+
+bool WaveformService::isLoading(const std::string& path) const
+{
+    return snapshotFor(path).status == Status::Loading;
+}
+
+bool WaveformService::hasPendingAnalysis() const
+{
+    std::scoped_lock lock(mutex_);
+    return pendingAnalysisCountLocked() > 0;
+}
+
+int WaveformService::pendingAnalysisCount() const
+{
+    std::scoped_lock lock(mutex_);
+    return pendingAnalysisCountLocked();
+}
+
+void WaveformService::addListener(Listener* listener)
+{
+    if (listener == nullptr)
+    {
+        return;
+    }
+
+    std::scoped_lock lock(mutex_);
+    if (std::find(listeners_.begin(), listeners_.end(), listener) == listeners_.end())
+    {
+        listeners_.push_back(listener);
+    }
+}
+
+void WaveformService::removeListener(Listener* listener)
+{
+    std::scoped_lock lock(mutex_);
+    listeners_.erase(
+        std::remove(listeners_.begin(), listeners_.end(), listener),
+        listeners_.end());
+}
+
+#if MOON_HAS_JUCE
+WaveformService::AnalysisJob::AnalysisJob(WaveformService& owner, std::string sourcePath)
+    : juce::ThreadPoolJob("Waveform analysis: " + sourcePath)
+    , owner_(owner)
+    , sourcePath_(std::move(sourcePath))
+{
+}
+
+juce::ThreadPoolJob::JobStatus WaveformService::AnalysisJob::runJob()
+{
+    WaveformDataPtr data;
+    std::string errorMessage;
+    if (owner_.persistentCache_ != nullptr)
+    {
+        if (const auto cached = owner_.persistentCache_->load(sourcePath_))
+        {
+            data = std::make_shared<WaveformData>(*cached);
+        }
+    }
+    if (data == nullptr)
+    {
+        data = owner_.analyzer_.analyzeFile(sourcePath_);
+        if (data != nullptr && !data->mipLevels.empty())
+        {
+            if (owner_.persistentCache_ != nullptr)
+            {
+                owner_.persistentCache_->store(sourcePath_, *data);
+            }
+        }
+    }
+
+    if (data == nullptr || data->mipLevels.empty())
+    {
+        errorMessage = "Unable to analyze waveform source";
+        data = std::make_shared<WaveformData>();
+    }
+
+    owner_.completeAnalysis(sourcePath_, std::move(data), std::move(errorMessage));
+    return jobHasFinished;
+}
+#endif
+
+void WaveformService::completeAnalysis(const std::string& path, WaveformDataPtr data, std::string errorMessage)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        auto& entry = ensureEntryLocked(path);
+        entry.queued = false;
+        residentBytes_ -= entry.approxBytes;
+        entry.snapshot.data = std::move(data);
+        entry.snapshot.errorMessage = std::move(errorMessage);
+        entry.snapshot.status = entry.snapshot.data != nullptr && !entry.snapshot.data->mipLevels.empty()
+            ? Status::Ready
+            : Status::Failed;
+        entry.snapshot.revision += 1;
+        entry.approxBytes = estimateBytes(entry.snapshot.data);
+        residentBytes_ += entry.approxBytes;
+        entry.lastUse = ++useCounter_;
+        completedPaths_.push_back(path);
+        pruneEntriesLocked();
+    }
+
+    if (errorMessage.empty())
+    {
+        logger_.info("WaveformService: ready " + path);
+    }
+    else
+    {
+        logger_.warning("WaveformService: failed " + path + " (" + errorMessage + ")");
+    }
+
+#if MOON_HAS_JUCE
+    triggerAsyncUpdate();
+#endif
+}
+
+WaveformService::Entry& WaveformService::ensureEntryLocked(const std::string& path)
+{
+    return entries_.try_emplace(path).first->second;
+}
+
+int WaveformService::pendingAnalysisCountLocked() const
+{
+    return static_cast<int>(std::count_if(entries_.begin(), entries_.end(), [](const auto& entry)
+    {
+        return entry.second.queued || entry.second.snapshot.status == Status::Loading;
+    }));
+}
+
+std::uint64_t WaveformService::estimateBytes(const WaveformDataPtr& data) const noexcept
+{
+    if (data == nullptr)
+    {
+        return 0;
+    }
+
+    std::uint64_t bytes = sizeof(WaveformData);
+    for (const auto& level : data->mipLevels)
+    {
+        bytes += sizeof(WaveformMipLevel);
+        bytes += static_cast<std::uint64_t>(level.buckets.size()) * sizeof(WaveformBucket);
+    }
+    return bytes;
+}
+
+void WaveformService::pruneEntriesLocked()
+{
+    constexpr std::uint64_t kMaxResidentBytes = 256ull * 1024ull * 1024ull;
+    constexpr std::size_t kMaxResidentSources = 96;
+
+    while ((residentBytes_ > kMaxResidentBytes || entries_.size() > kMaxResidentSources))
+    {
+        auto pruneIt = entries_.end();
+        for (auto it = entries_.begin(); it != entries_.end(); ++it)
+        {
+            if (it->second.queued || it->second.snapshot.status == Status::Loading)
+            {
+                continue;
+            }
+
+            if (pruneIt == entries_.end() || it->second.lastUse < pruneIt->second.lastUse)
+            {
+                pruneIt = it;
+            }
+        }
+
+        if (pruneIt == entries_.end())
+        {
+            break;
+        }
+
+        residentBytes_ -= pruneIt->second.approxBytes;
+        entries_.erase(pruneIt);
+    }
+}
+
+#if MOON_HAS_JUCE
+void WaveformService::handleAsyncUpdate()
+{
+    std::vector<std::string> updatedPaths;
+    std::vector<Listener*> listeners;
+    {
+        std::scoped_lock lock(mutex_);
+        updatedPaths.swap(completedPaths_);
+        listeners = listeners_;
+    }
+
+    for (const auto& path : updatedPaths)
+    {
+        for (auto* listener : listeners)
+        {
+            if (listener != nullptr)
+            {
+                listener->waveformSourceUpdated(path);
+            }
+        }
+    }
+}
+#endif
 }

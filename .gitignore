@@ -35,5 +35,3 @@ cache/
 backend/.venv/
 backend/**/__pycache__/
 *.pyc
-
-h origin HEAD

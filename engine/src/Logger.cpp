@@ -10,6 +10,17 @@ namespace moon::engine
 {
 namespace
 {
+std::filesystem::path resolveLogFilePath()
+{
+#if defined(_WIN32)
+    if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+    {
+        return std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "app.log";
+    }
+#endif
+    return std::filesystem::path("logs") / "app.log";
+}
+
 std::string makeTimestamp()
 {
     const auto now = std::chrono::system_clock::now();
@@ -28,7 +39,7 @@ std::string makeTimestamp()
 }
 
 Logger::Logger()
-    : logFilePath_(std::filesystem::path("logs") / "app.log")
+    : logFilePath_(resolveLogFilePath())
 {
 }
 

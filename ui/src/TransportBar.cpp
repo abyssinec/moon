@@ -1,8 +1,98 @@
 #include "TransportBar.h"
 
+#include <algorithm>
+#include <cmath>
+
 #if MOON_HAS_JUCE
 namespace moon::ui
 {
+namespace
+{
+class TempoEditorContent final : public juce::Component
+{
+public:
+    TempoEditorContent(double currentTempo, std::function<void(double)> applyCallback)
+        : applyCallback_(std::move(applyCallback))
+    {
+        addAndMakeVisible(minusButton_);
+        addAndMakeVisible(valueButton_);
+        addAndMakeVisible(plusButton_);
+        addAndMakeVisible(editor_);
+
+        minusButton_.setButtonText("-");
+        plusButton_.setButtonText("+");
+        valueButton_.setButtonText(juce::String(static_cast<int>(std::round(currentTempo))) + " BPM");
+        for (auto* button : {&minusButton_, &valueButton_, &plusButton_})
+        {
+            button->setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(33, 36, 42));
+            button->setColour(juce::TextButton::buttonOnColourId, juce::Colour::fromRGB(43, 169, 237));
+            button->setColour(juce::TextButton::textColourOffId, juce::Colours::white.withAlpha(0.92f));
+        }
+
+        editor_.setVisible(false);
+        editor_.setText(juce::String(static_cast<int>(std::round(currentTempo))), juce::dontSendNotification);
+        editor_.setInputRestrictions(3, "0123456789");
+        editor_.onReturnKey = [this] { commitEditorValue(); };
+        editor_.onEscapeKey = [this] { hideEditor(); };
+        editor_.onFocusLost = [this] { commitEditorValue(); };
+
+        minusButton_.onClick = [this, currentTempo]
+        {
+            if (applyCallback_)
+            {
+                applyCallback_(std::clamp(currentTempo - 1.0, 20.0, 300.0));
+            }
+        };
+        plusButton_.onClick = [this, currentTempo]
+        {
+            if (applyCallback_)
+            {
+                applyCallback_(std::clamp(currentTempo + 1.0, 20.0, 300.0));
+            }
+        };
+        valueButton_.onClick = [this]
+        {
+            valueButton_.setVisible(false);
+            editor_.setVisible(true);
+            editor_.grabKeyboardFocus();
+            editor_.selectAll();
+        };
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(6);
+        minusButton_.setBounds(area.removeFromLeft(32).reduced(2));
+        plusButton_.setBounds(area.removeFromRight(32).reduced(2));
+        valueButton_.setBounds(area.reduced(2));
+        editor_.setBounds(valueButton_.getBounds());
+    }
+
+private:
+    void hideEditor()
+    {
+        editor_.setVisible(false);
+        valueButton_.setVisible(true);
+    }
+
+    void commitEditorValue()
+    {
+        const auto parsed = editor_.getText().getDoubleValue();
+        if (applyCallback_ && parsed > 0.0)
+        {
+            applyCallback_(std::clamp(parsed, 20.0, 300.0));
+        }
+        hideEditor();
+    }
+
+    std::function<void(double)> applyCallback_;
+    juce::TextButton minusButton_;
+    juce::TextButton valueButton_;
+    juce::TextButton plusButton_;
+    juce::TextEditor editor_;
+};
+}
+
 TransportBar::TransportBar(moon::engine::TransportFacade& transport,
                            moon::engine::Logger& logger,
                            std::function<void()> playCallback,
@@ -10,7 +100,10 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
                            std::function<void()> stopCallback,
                            std::function<void(double)> seekCallback,
                            std::function<double()> durationProvider,
+                           std::function<std::pair<int, int>()> timeSignatureProvider,
                            std::function<double()> tempoProvider,
+                           std::function<void(int, int)> timeSignatureChangeCallback,
+                           std::function<void(double)> tempoChangeCallback,
                            std::function<std::string()> statusProvider)
     : transport_(transport)
     , logger_(logger)
@@ -19,7 +112,10 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
     , stopCallback_(std::move(stopCallback))
     , seekCallback_(std::move(seekCallback))
     , durationProvider_(std::move(durationProvider))
+    , timeSignatureProvider_(std::move(timeSignatureProvider))
     , tempoProvider_(std::move(tempoProvider))
+    , timeSignatureChangeCallback_(std::move(timeSignatureChangeCallback))
+    , tempoChangeCallback_(std::move(tempoChangeCallback))
     , statusProvider_(std::move(statusProvider))
 {
     addAndMakeVisible(playButton_);
@@ -27,7 +123,8 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
     addAndMakeVisible(stopButton_);
     addAndMakeVisible(loopToggle_);
     addAndMakeVisible(positionSlider_);
-    addAndMakeVisible(meterLabel_);
+    addAndMakeVisible(timeSignatureButton_);
+    addAndMakeVisible(bpmButton_);
     addAndMakeVisible(timeLabel_);
     addAndMakeVisible(statusLabel_);
 
@@ -37,11 +134,8 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
     positionSlider_.setColour(juce::Slider::backgroundColourId, juce::Colour::fromRGB(48, 53, 60));
     positionSlider_.setColour(juce::Slider::trackColourId, juce::Colour::fromRGB(43, 169, 237));
     positionSlider_.setColour(juce::Slider::thumbColourId, juce::Colour::fromRGB(83, 203, 255));
-    meterLabel_.setText("4/4 | 120 BPM", juce::dontSendNotification);
     timeLabel_.setText("00:00.000", juce::dontSendNotification);
     statusLabel_.setText("Backend: unknown", juce::dontSendNotification);
-    meterLabel_.setJustificationType(juce::Justification::centredLeft);
-    meterLabel_.setColour(juce::Label::textColourId, juce::Colour::fromRGB(173, 179, 189));
     timeLabel_.setJustificationType(juce::Justification::centredLeft);
     timeLabel_.setColour(juce::Label::textColourId, juce::Colour::fromRGB(230, 232, 235));
     statusLabel_.setJustificationType(juce::Justification::centredLeft);
@@ -57,6 +151,8 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
     styleButton(playButton_);
     styleButton(pauseButton_);
     styleButton(stopButton_);
+    styleButton(timeSignatureButton_);
+    styleButton(bpmButton_);
     loopToggle_.setColour(juce::ToggleButton::textColourId, juce::Colours::white.withAlpha(0.82f));
     playButton_.setButtonText("Play");
     pauseButton_.setButtonText("Pause");
@@ -105,6 +201,8 @@ TransportBar::TransportBar(moon::engine::TransportFacade& transport,
             transport_.seek(positionSlider_.getValue());
         }
     };
+    timeSignatureButton_.onClick = [this] { showTimeSignatureMenu(); };
+    bpmButton_.onClick = [this] { showTempoEditor(); };
 }
 
 void TransportBar::paint(juce::Graphics& g)
@@ -123,7 +221,8 @@ void TransportBar::resized()
     pauseButton_.setBounds(area.removeFromLeft(74).reduced(4));
     stopButton_.setBounds(area.removeFromLeft(70).reduced(4));
     loopToggle_.setBounds(area.removeFromLeft(76).reduced(4));
-    meterLabel_.setBounds(area.removeFromLeft(110).reduced(4));
+    timeSignatureButton_.setBounds(area.removeFromLeft(72).reduced(4));
+    bpmButton_.setBounds(area.removeFromLeft(86).reduced(4));
     timeLabel_.setBounds(area.removeFromLeft(176).reduced(4));
     positionSlider_.setBounds(area.removeFromLeft(420).reduced(4));
     statusLabel_.setBounds(area.reduced(3));
@@ -147,8 +246,10 @@ void TransportBar::refresh()
         totalMinutes,
         totalSeconds,
         totalMillis);
+    const auto timeSignature = timeSignatureProvider_ ? timeSignatureProvider_() : std::pair<int, int>{4, 4};
     const auto tempo = tempoProvider_ ? tempoProvider_() : 120.0;
-    meterLabel_.setText("4/4 | " + juce::String(tempo, 0) + " BPM", juce::dontSendNotification);
+    timeSignatureButton_.setButtonText(juce::String(timeSignature.first) + "/" + juce::String(timeSignature.second));
+    bpmButton_.setButtonText(juce::String(static_cast<int>(std::round(tempo))) + " BPM");
     timeLabel_.setText(text, juce::dontSendNotification);
     refreshingPosition_ = true;
     positionSlider_.setRange(0.0, juce::jmax(0.1, durationSec), 0.001);
@@ -158,6 +259,58 @@ void TransportBar::refresh()
     {
         statusLabel_.setText(statusProvider_(), juce::dontSendNotification);
     }
+}
+
+void TransportBar::showTimeSignatureMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem(1, "2/4");
+    menu.addItem(2, "3/4");
+    menu.addItem(3, "4/4");
+    menu.addItem(4, "5/4");
+    menu.addItem(5, "6/8");
+    menu.addItem(6, "7/8");
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(&timeSignatureButton_),
+        [this](int result)
+        {
+            if (!timeSignatureChangeCallback_)
+            {
+                return;
+            }
+
+            switch (result)
+            {
+            case 1: timeSignatureChangeCallback_(2, 4); break;
+            case 2: timeSignatureChangeCallback_(3, 4); break;
+            case 3: timeSignatureChangeCallback_(4, 4); break;
+            case 4: timeSignatureChangeCallback_(5, 4); break;
+            case 5: timeSignatureChangeCallback_(6, 8); break;
+            case 6: timeSignatureChangeCallback_(7, 8); break;
+            default: break;
+            }
+            refresh();
+        });
+}
+
+void TransportBar::showTempoEditor()
+{
+    auto content = std::make_unique<TempoEditorContent>(
+        tempoProvider_ ? tempoProvider_() : 120.0,
+        [this](double newTempo)
+        {
+            if (tempoChangeCallback_)
+            {
+                tempoChangeCallback_(newTempo);
+            }
+            refresh();
+            if (tempoCallout_ != nullptr)
+            {
+                tempoCallout_->dismiss();
+            }
+        });
+    content->setSize(162, 42);
+    tempoCallout_ = &juce::CallOutBox::launchAsynchronously(std::move(content), bpmButton_.getScreenBounds(), nullptr);
 }
 }
 #endif

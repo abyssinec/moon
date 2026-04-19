@@ -146,6 +146,33 @@ public:
         return false;
     }
 
+    bool moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec) override
+    {
+        for (auto& clip : state.clips)
+        {
+            if (clip.id != clipId)
+            {
+                continue;
+            }
+
+            const auto clampedStartSec = std::max(0.0, newStartSec);
+            const bool trackChanged = clip.trackId != trackId;
+            const bool timeChanged = std::abs(clip.startSec - clampedStartSec) >= 0.0001;
+            if (!trackChanged && !timeChanged)
+            {
+                return false;
+            }
+
+            clip.trackId = trackId;
+            clip.startSec = clampedStartSec;
+            state.uiState.selectedTrackId = trackId;
+            logger_.info("Moved clip " + clip.id + " to " + trackId + " at " + std::to_string(clampedStartSec) + " sec");
+            return true;
+        }
+
+        return false;
+    }
+
     bool toggleTrackMute(ProjectState& state, const std::string& trackId) override
     {
         for (auto& track : state.tracks)
@@ -312,6 +339,13 @@ public:
         markDeferredSync("moveClip");
         syncBridge_->syncEditState(state, "moveClip");
         return fallback_->moveClip(state, clipId, newStartSec);
+    }
+
+    bool moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec) override
+    {
+        markDeferredSync("moveClipToTrack");
+        syncBridge_->syncEditState(state, "moveClipToTrack");
+        return fallback_->moveClipToTrack(state, clipId, trackId, newStartSec);
     }
 
     bool toggleTrackMute(ProjectState& state, const std::string& trackId) override

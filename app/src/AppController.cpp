@@ -1,8 +1,15 @@
-﻿#include "AppController.h"
+#include "AppController.h"
+
+#if MOON_HAS_JUCE
+#include <juce_audio_formats/juce_audio_formats.h>
+#endif
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 #include "AppConfig.h"
 
@@ -10,6 +17,23 @@ namespace moon::app
 {
 namespace
 {
+void appendBootstrapTrace(const std::string& line)
+{
+#if defined(_WIN32)
+    if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+    {
+        const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::app);
+        if (out)
+        {
+            out << line << "\n";
+        }
+        return;
+    }
+#endif
+}
+
 moon::engine::ClipInfo* findSelectedClip(moon::engine::ProjectState& state)
 {
     for (auto& clip : state.clips)
@@ -35,6 +59,34 @@ std::string resolveAssetPath(const moon::engine::ProjectState& state, const moon
     return {};
 }
 
+#if MOON_HAS_JUCE
+struct AudioImportMetadata
+{
+    double durationSec{0.0};
+    int sampleRate{0};
+};
+
+AudioImportMetadata readAudioImportMetadata(const std::string& audioPath)
+{
+    AudioImportMetadata metadata;
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(juce::File(audioPath)));
+    if (reader == nullptr)
+    {
+        return metadata;
+    }
+
+    metadata.sampleRate = static_cast<int>(reader->sampleRate);
+    if (reader->sampleRate > 0.0 && reader->lengthInSamples > 0)
+    {
+        metadata.durationSec = static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+    }
+    return metadata;
+}
+#endif
+
 void clearSelectedClipState(moon::engine::ProjectState& state)
 {
     state.uiState.selectedClipId.clear();
@@ -46,25 +98,42 @@ void clearSelectedClipState(moon::engine::ProjectState& state)
 }
 
 AppController::AppController()
-    : logger_(std::make_unique<moon::engine::Logger>())
-    , settingsService_(std::make_unique<moon::engine::SettingsService>())
-    , settings_(settingsService_->load())
-    , projectManager_(std::make_unique<moon::engine::ProjectManager>(*logger_))
-    , runtimeCoordinator_(std::make_unique<moon::engine::EngineRuntimeCoordinator>(*logger_))
-    , timeline_(std::make_unique<moon::engine::TimelineFacade>(*logger_))
-    , clipOperations_(std::make_unique<moon::engine::ClipOperations>(*logger_))
-    , transport_(std::make_unique<moon::engine::TransportFacade>(*logger_))
-    , waveformService_(std::make_unique<moon::engine::WaveformService>(*logger_))
-    , exportService_(std::make_unique<moon::engine::ExportService>(*logger_))
-    , aiJobClient_(std::make_unique<moon::engine::AIJobClient>(settings_.backendUrl.empty() ? std::string(AppConfig::backendUrl) : settings_.backendUrl, *logger_))
-    , taskManager_(std::make_unique<moon::engine::TaskManager>(*aiJobClient_, *logger_))
 {
+    appendBootstrapTrace("[bootstrap] AppController ctor begin");
+    logger_ = std::make_unique<moon::engine::Logger>();
+    appendBootstrapTrace("[bootstrap] logger created");
+    settingsService_ = std::make_unique<moon::engine::SettingsService>();
+    appendBootstrapTrace("[bootstrap] settings service created");
+    settings_ = settingsService_->load();
+    appendBootstrapTrace("[bootstrap] settings loaded");
+    projectManager_ = std::make_unique<moon::engine::ProjectManager>(*logger_);
+    appendBootstrapTrace("[bootstrap] project manager created");
+    runtimeCoordinator_ = std::make_unique<moon::engine::EngineRuntimeCoordinator>(*logger_);
+    appendBootstrapTrace("[bootstrap] runtime coordinator created");
+    timeline_ = std::make_unique<moon::engine::TimelineFacade>(*logger_);
+    appendBootstrapTrace("[bootstrap] timeline facade created");
+    clipOperations_ = std::make_unique<moon::engine::ClipOperations>(*logger_);
+    appendBootstrapTrace("[bootstrap] clip operations created");
+    transport_ = std::make_unique<moon::engine::TransportFacade>(*logger_);
+    appendBootstrapTrace("[bootstrap] transport facade created");
+    waveformService_ = std::make_unique<moon::engine::WaveformService>(*logger_);
+    appendBootstrapTrace("[bootstrap] waveform service created");
+    exportService_ = std::make_unique<moon::engine::ExportService>(*logger_);
+    appendBootstrapTrace("[bootstrap] export service created");
+    aiJobClient_ = std::make_unique<moon::engine::LocalJobClient>(
+        settings_.backendUrl.empty() ? std::string(AppConfig::backendUrl) : settings_.backendUrl,
+        *logger_);
+    appendBootstrapTrace("[bootstrap] ai job client created");
+    taskManager_ = std::make_unique<moon::engine::TaskManager>(*aiJobClient_, *logger_);
+    appendBootstrapTrace("[bootstrap] task manager created");
+
     transport_->setProjectState(&projectManager_->state());
 #if MOON_HAS_TRACKTION
     timeline_->setPreferredBackend(moon::engine::TimelineBackendMode::TracktionHybrid);
     transport_->setPreferredBackend(moon::engine::TransportBackendMode::TracktionHybrid);
 #endif
     syncEngineIntegrationState();
+    appendBootstrapTrace("[bootstrap] AppController ctor end");
 }
 
 bool AppController::startup()
@@ -83,6 +152,7 @@ bool AppController::startup()
         logger_->info("Created default startup project at " + defaultRoot);
     }
 
+    refreshBackendStatus();
     logger_->info("Startup completed without blocking backend probe");
     return true;
 }
@@ -180,6 +250,17 @@ bool AppController::saveProject()
 
 bool AppController::importAudio(const std::string& audioPath)
 {
+    auto& state = projectManager_->state();
+    if (state.tracks.empty())
+    {
+        timeline_->ensureTrack(state, "Track 1");
+    }
+
+    return importAudioToTrack(audioPath, state.tracks.front().id, 0.0);
+}
+
+bool AppController::importAudioToTrack(const std::string& audioPath, const std::string& trackId, double startSec)
+{
     if (!std::filesystem::exists(audioPath))
     {
         logger_->error("Import failed, file not found: " + audioPath);
@@ -188,23 +269,39 @@ bool AppController::importAudio(const std::string& audioPath)
 
     auto& state = projectManager_->state();
     const bool wasEmptyProject = state.clips.empty();
-    const auto waveform = waveformService_->requestWaveform(audioPath);
-    if (wasEmptyProject && waveform.sampleRate > 0)
+    waveformService_->requestWaveform(audioPath);
+    const auto waveformSnapshot = waveformService_->snapshotFor(audioPath);
+
+    int detectedSampleRate = 0;
+    double detectedDurationSec = 0.0;
+#if MOON_HAS_JUCE
+    const auto importMetadata = readAudioImportMetadata(audioPath);
+    detectedSampleRate = importMetadata.sampleRate;
+    detectedDurationSec = importMetadata.durationSec;
+#endif
+
+    if (detectedSampleRate <= 0 && waveformSnapshot.data != nullptr && waveformSnapshot.data->sampleRate > 0)
     {
-        state.sampleRate = waveform.sampleRate;
+        detectedSampleRate = waveformSnapshot.data->sampleRate;
+    }
+
+    if (detectedDurationSec <= 0.0 && waveformSnapshot.data != nullptr)
+    {
+        detectedDurationSec = waveformSnapshot.data->durationSec;
+    }
+
+    if (wasEmptyProject && detectedSampleRate > 0)
+    {
+        state.sampleRate = detectedSampleRate;
         logger_->info("Adjusted project sample rate to imported WAV sample rate: " + std::to_string(state.sampleRate));
     }
 
-    if (state.tracks.empty())
-    {
-        timeline_->ensureTrack(state, "Track 1");
-    }
-
-    const auto durationSec = std::max(0.1, waveform.durationSec);
-    const auto clipId = timeline_->insertAudioClip(state, state.tracks.front().id, audioPath, 0.0, durationSec);
+    const auto durationSec = std::max(0.1, detectedDurationSec);
+    const auto resolvedTrackId = !trackId.empty() ? trackId : timeline_->ensureTrack(state, "Track 1");
+    const auto clipId = timeline_->insertAudioClip(state, resolvedTrackId, audioPath, std::max(0.0, startSec), durationSec);
     timeline_->selectClip(state, clipId);
-    state.uiState.selectedTrackId = state.tracks.front().id;
-    state.uiState.playheadSec = 0.0;
+    state.uiState.selectedTrackId = resolvedTrackId;
+    state.uiState.playheadSec = std::max(0.0, startSec);
     markPreviewPlaybackDirty();
     markProjectDirty();
     logger_->info("Imported audio clip into project playback path: " + clipId);
@@ -218,7 +315,7 @@ std::optional<std::string> AppController::projectFilePath() const
 
 std::string AppController::backendStatusSummary() const
 {
-    std::string summary = aiJobClient_->backendReachable() ? "Backend live" : "Backend fallback";
+    std::string summary = backendHealth_.backend == "local-job-service" ? "Local jobs" : (aiJobClient_->backendReachable() ? "Backend live" : "Backend fallback");
     const auto route = transport_->playbackRouteSummary();
     if (route == "project-live")
     {
@@ -489,6 +586,18 @@ bool AppController::moveClipOnTimeline(const std::string& clipId, double newStar
         "moveClipOnTimeline");
 }
 
+bool AppController::moveClipToTrack(const std::string& clipId, const std::string& trackId, double newStartSec)
+{
+    return finalizeTimelineEdit(
+        [this, &clipId, &trackId, newStartSec]()
+        {
+            return timeline_->moveClipToTrack(projectManager_->state(), clipId, trackId, newStartSec);
+        },
+        true,
+        {},
+        "moveClipToTrack");
+}
+
 void AppController::beginInteractiveTimelineEdit()
 {
     if (interactiveTimelineEditActive_)
@@ -556,6 +665,57 @@ bool AppController::toggleTrackSolo(const std::string& trackId)
         false,
         {},
         "toggleTrackSolo");
+}
+
+bool AppController::renameTrack(const std::string& trackId, const std::string& newName)
+{
+    auto sanitizedName = newName;
+    sanitizedName.erase(sanitizedName.begin(), std::find_if(sanitizedName.begin(), sanitizedName.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+    sanitizedName.erase(std::find_if(sanitizedName.rbegin(), sanitizedName.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), sanitizedName.end());
+    if (sanitizedName.empty())
+    {
+        for (std::size_t index = 0; index < projectManager_->state().tracks.size(); ++index)
+        {
+            if (projectManager_->state().tracks[index].id == trackId)
+            {
+                sanitizedName = "Track " + std::to_string(index + 1);
+                break;
+            }
+        }
+    }
+
+    return finalizeTimelineEdit(
+        [this, &trackId, &sanitizedName]()
+        {
+            return timeline_->renameTrack(projectManager_->state(), trackId, sanitizedName);
+        },
+        false,
+        {},
+        "renameTrack");
+}
+
+bool AppController::deleteTrack(const std::string& trackId)
+{
+    return finalizeTimelineEdit(
+        [this, &trackId]()
+        {
+            return timeline_->deleteTrack(projectManager_->state(), trackId);
+        },
+        true,
+        {},
+        "deleteTrack");
+}
+
+bool AppController::setTrackColor(const std::string& trackId, const std::string& colorHex)
+{
+    return finalizeTimelineEdit(
+        [this, &trackId, &colorHex]()
+        {
+            return timeline_->setTrackColor(projectManager_->state(), trackId, colorHex);
+        },
+        false,
+        {},
+        "setTrackColor");
 }
 
 void AppController::playTransport()
@@ -788,6 +948,14 @@ bool AppController::refreshBackendStatus()
     backendHealth_ = aiJobClient_->healthCheck();
     backendModels_ = aiJobClient_->models();
 
+    if (backendHealth_.backend == "local-job-service")
+    {
+        logger_->info("Local job services ready");
+        backendFallbackNoticeActive_ = false;
+        refreshStartupNoticeState();
+        return true;
+    }
+
     if (aiJobClient_->backendReachable())
     {
         logger_->info("Backend refresh succeeded: " + backendHealth_.status);
@@ -800,6 +968,15 @@ bool AppController::refreshBackendStatus()
     backendFallbackNoticeActive_ = true;
     refreshStartupNoticeState();
     return false;
+}
+
+void AppController::setBackendUrl(const std::string& backendUrl)
+{
+    settings_.backendUrl = backendUrl;
+    if (aiJobClient_ != nullptr)
+    {
+        aiJobClient_->setBackendUrl(backendUrl);
+    }
 }
 
 bool AppController::rebuildPreviewPlayback()
@@ -1185,6 +1362,46 @@ double AppController::projectPlaybackDurationSec() const
     return 0.1;
 }
 
+bool AppController::setProjectTempo(double tempo)
+{
+    const auto clampedTempo = std::clamp(tempo, 20.0, 300.0);
+    auto& state = projectManager_->state();
+    if (std::abs(state.tempo - clampedTempo) < 0.0001)
+    {
+        return false;
+    }
+
+    state.tempo = clampedTempo;
+    markPreviewPlaybackDirty();
+    syncTransportToSelection();
+    syncEngineIntegrationState("project tempo updated");
+    markProjectDirty();
+    saveProject();
+    logger_->info("Updated project tempo to " + std::to_string(clampedTempo) + " BPM");
+    return true;
+}
+
+bool AppController::setProjectTimeSignature(int numerator, int denominator)
+{
+    const int sanitizedNumerator = std::clamp(numerator, 2, 12);
+    const int sanitizedDenominator = denominator == 8 ? 8 : 4;
+    auto& state = projectManager_->state();
+    if (state.timeSignatureNumerator == sanitizedNumerator && state.timeSignatureDenominator == sanitizedDenominator)
+    {
+        return false;
+    }
+
+    state.timeSignatureNumerator = sanitizedNumerator;
+    state.timeSignatureDenominator = sanitizedDenominator;
+    markPreviewPlaybackDirty();
+    syncTransportToSelection();
+    syncEngineIntegrationState("project time signature updated");
+    markProjectDirty();
+    saveProject();
+    logger_->info("Updated time signature to " + std::to_string(sanitizedNumerator) + "/" + std::to_string(sanitizedDenominator));
+    return true;
+}
+
 bool AppController::canCloseSafely() const
 {
     return taskManager_->activeTaskCount() == 0;
@@ -1202,7 +1419,7 @@ std::string AppController::startupNotice() const
     std::string notice;
     if (backendFallbackNoticeActive_)
     {
-        notice += "Local backend is not reachable. The app will use stub fallback jobs until the FastAPI service is started.";
+        notice += "Optional AI runners are not reachable. The app will use local stub jobs until real runners are configured.";
     }
     if (autosaveRecoveryNoticeActive_)
     {
@@ -1233,6 +1450,15 @@ void AppController::clearProjectDirty()
 
 void AppController::refreshStartupNoticeState()
 {
+    if (aiJobClient_ != nullptr && aiJobClient_->backendReachable())
+    {
+        backendFallbackNoticeActive_ = false;
+    }
+
+    if (projectManager_ != nullptr && !projectManager_->hasAutosave())
+    {
+        autosaveRecoveryNoticeActive_ = false;
+    }
 }
 
 void AppController::syncEngineIntegrationState(const std::string& reason)

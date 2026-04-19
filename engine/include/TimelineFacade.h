@@ -34,6 +34,10 @@ public:
     void setSelectedRegion(ProjectState& state, double startSec, double endSec);
     void clearSelectedRegion(ProjectState& state);
     bool moveClip(ProjectState& state, const std::string& clipId, double newStartSec);
+    bool moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec);
+    bool renameTrack(ProjectState& state, const std::string& trackId, const std::string& newName);
+    bool deleteTrack(ProjectState& state, const std::string& trackId);
+    bool setTrackColor(ProjectState& state, const std::string& trackId, const std::string& colorHex);
     bool toggleTrackMute(ProjectState& state, const std::string& trackId);
     bool toggleTrackSolo(ProjectState& state, const std::string& trackId);
     void setPreferredBackend(TimelineBackendMode mode);

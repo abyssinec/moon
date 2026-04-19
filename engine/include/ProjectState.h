@@ -22,6 +22,7 @@ struct TrackInfo
 {
     std::string id;
     std::string name;
+    std::string colorHex;
     bool mute{false};
     bool solo{false};
     double gainDb{0.0};
@@ -70,6 +71,8 @@ struct ProjectState
     std::string projectName{"Untitled"};
     int sampleRate{44100};
     double tempo{120.0};
+    int timeSignatureNumerator{4};
+    int timeSignatureDenominator{4};
     std::vector<TrackInfo> tracks;
     std::vector<ClipInfo> clips;
     std::unordered_map<std::string, AssetInfo> sourceAssets;

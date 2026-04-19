@@ -13,8 +13,16 @@ MainWindow::MainWindow(AppController& controller)
     setUsingNativeTitleBar(true);
     setResizable(true, true);
     setContentOwned(mainComponent_.release(), true);
-    centreWithSize(1400, 900);
+    if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+    {
+        setBounds(display->userArea);
+    }
+    else
+    {
+        centreWithSize(1400, 900);
+    }
     setVisible(true);
+    setFullScreen(true);
     startTimerHz(4);
 
     if (!controller_.startupNotice().empty())

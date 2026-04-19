@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.24)
 
 project(MoonAudioEditor VERSION 0.1.0 LANGUAGES C CXX)
 
@@ -27,7 +27,7 @@ if (MOON_ENABLE_PACKAGING)
     install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR})
     install(
         DIRECTORY backend/
-        DESTINATION backend
+        DESTINATION ${CMAKE_INSTALL_BINDIR}/data/backend
         FILES_MATCHING
             PATTERN "*.py"
             PATTERN "*.txt"

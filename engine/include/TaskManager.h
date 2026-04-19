@@ -38,7 +38,7 @@ struct PendingInsertion
 class TaskManager
 {
 public:
-    TaskManager(AIJobClient& client, Logger& logger);
+    TaskManager(JobClientProtocol& client, Logger& logger);
     void upsertTask(const TaskInfo& task);
     std::unordered_map<std::string, TaskInfo> tasks() const;
     std::string queueStems(const std::string& sourceClipId, const std::string& inputAudioPath, double startSec);
@@ -60,7 +60,7 @@ public:
     std::vector<TaskInfo> recentTasks() const;
 
 private:
-    AIJobClient& client_;
+    JobClientProtocol& client_;
     Logger& logger_;
     std::unordered_map<std::string, TaskInfo> tasks_;
     std::unordered_map<std::string, PendingInsertion> pendingInsertions_;

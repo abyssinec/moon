@@ -7,9 +7,12 @@
     src/TimelineFacade.cpp
     src/TransportFacade.cpp
     src/WaveformService.cpp
+    src/WaveformAnalyzer.cpp
+    src/WaveformDiskCache.cpp
     src/ClipOperations.cpp
     src/ExportService.cpp
     src/AIJobClient.cpp
+    src/LocalJobClient.cpp
     src/TaskManager.cpp
     src/Logger.cpp
     src/SettingsService.cpp
