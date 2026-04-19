@@ -155,6 +155,79 @@ double gridDivisionSec(TimelineGridMode mode, double tempo, int numerator, int d
 
     return beatSec;
 }
+
+struct TimelineGridLod
+{
+    bool showBeatLines { true };
+    bool showSubdivisionLines { false };
+    float majorThickness { 1.15f };
+    float beatThickness { 0.65f };
+    float subdivisionThickness { 0.45f };
+    float oddBarAlpha { 0.32f };
+    float evenBarAlpha { 0.20f };
+};
+
+TimelineGridLod computeTimelineGridLod(float barWidthPx, float beatWidthPx, float gridWidthPx)
+{
+    TimelineGridLod lod{};
+
+    if (barWidthPx < 22.0f)
+    {
+        lod.showBeatLines = false;
+        lod.showSubdivisionLines = false;
+        lod.majorThickness = 0.85f;
+        lod.beatThickness = 0.0f;
+        lod.subdivisionThickness = 0.0f;
+        lod.oddBarAlpha = 0.18f;
+        lod.evenBarAlpha = 0.14f;
+        return lod;
+    }
+
+    if (barWidthPx < 36.0f)
+    {
+        lod.showBeatLines = false;
+        lod.showSubdivisionLines = false;
+        lod.majorThickness = 0.88f;
+        lod.beatThickness = 0.0f;
+        lod.subdivisionThickness = 0.0f;
+        lod.oddBarAlpha = 0.18f;
+        lod.evenBarAlpha = 0.14f;
+        return lod;
+    }
+
+    if (barWidthPx < 60.0f)
+    {
+        lod.showBeatLines = true;
+        lod.showSubdivisionLines = false;
+        lod.majorThickness = 0.90f;
+        lod.beatThickness = 0.48f;
+        lod.subdivisionThickness = 0.0f;
+        lod.oddBarAlpha = 0.18f;
+        lod.evenBarAlpha = 0.14f;
+        return lod;
+    }
+
+    if (barWidthPx < 110.0f)
+    {
+        lod.showBeatLines = true;
+        lod.showSubdivisionLines = false;
+        lod.majorThickness = 0.92f;
+        lod.beatThickness = 0.50f;
+        lod.subdivisionThickness = 0.0f;
+        lod.oddBarAlpha = 0.18f;
+        lod.evenBarAlpha = 0.14f;
+        return lod;
+    }
+
+    lod.showBeatLines = true;
+    lod.showSubdivisionLines = gridWidthPx >= 12.0f;
+    lod.majorThickness = 0.95f;
+    lod.beatThickness = 0.52f;
+    lod.subdivisionThickness = 0.26f;
+    lod.oddBarAlpha = 0.18f;
+    lod.evenBarAlpha = 0.14f;
+    return lod;
+}
 }
 
 TimelineView::TimelineView(moon::engine::TimelineFacade& timeline,
@@ -211,60 +284,93 @@ void TimelineView::paintTimelineBase(juce::Graphics& g)
     const auto tempo = juce::jmax(30.0, state.tempo);
     const auto numerator = juce::jmax(1, state.timeSignatureNumerator);
     const auto denominator = juce::jmax(1, state.timeSignatureDenominator);
+
     const double beatSec = beatDurationSec(tempo, denominator);
     const double barSec = barDurationSec(tempo, numerator, denominator);
     const double gridSec = gridDivisionSec(gridMode_, tempo, numerator, denominator);
+
+    const float beatWidthPx = static_cast<float>(beatSec * pixelsPerSecond_);
+    const float barWidthPx = static_cast<float>(barSec * pixelsPerSecond_);
+    const float gridWidthPx = gridSec > 0.0 ? static_cast<float>(gridSec * pixelsPerSecond_) : 0.0f;
+    const auto lod = computeTimelineGridLod(barWidthPx, beatWidthPx, gridWidthPx);
+
     const auto visibleArea = g.getClipBounds();
     const auto visibleStartSec = juce::jmax(0.0, xToTime(visibleArea.getX() - 8));
     const auto visibleEndSec = juce::jmax(visibleStartSec, xToTime(visibleArea.getRight() + 8));
-    const auto firstBeatIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / beatSec)) - 1);
-    const auto lastBeatIndex = juce::jmax(firstBeatIndex, static_cast<int>(std::ceil(visibleEndSec / beatSec)) + 1);
-    g.fillAll(juce::Colour::fromRGB(18, 20, 24));
-
     const auto firstBarIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / barSec)) - 1);
     const auto lastBarIndex = juce::jmax(firstBarIndex, static_cast<int>(std::ceil(visibleEndSec / barSec)) + 1);
+    const auto firstBeatIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / beatSec)) - 1);
+    const auto lastBeatIndex = juce::jmax(firstBeatIndex, static_cast<int>(std::ceil(visibleEndSec / beatSec)) + 1);
+
+    g.fillAll(juce::Colour::fromRGB(18, 23, 29));
+
     for (int barIndex = firstBarIndex; barIndex <= lastBarIndex; ++barIndex)
     {
-        if ((barIndex % 2) != 0)
-        {
-            continue;
-        }
-
         const auto barStartSec = static_cast<double>(barIndex) * barSec;
         const auto barEndSec = barStartSec + barSec;
         const auto barX = kTimelineLeftPadding + static_cast<int>(std::round(barStartSec * pixelsPerSecond_));
-        const auto barW = static_cast<int>(std::round((barEndSec - barStartSec) * pixelsPerSecond_));
-        g.setColour(juce::Colour::fromRGB(22, 25, 29));
+        const auto barW = juce::jmax(1, static_cast<int>(std::round((barEndSec - barStartSec) * pixelsPerSecond_)));
+
+        juce::Colour bandColour = ((barIndex % 2) == 0)
+            ? juce::Colour::fromRGB(26, 33, 41).withAlpha(lod.oddBarAlpha) : juce::Colour::fromRGB(20, 26, 33).withAlpha(lod.evenBarAlpha);
+
+        g.setColour(bandColour);
         g.fillRect(barX, kHeaderHeight, barW, getHeight() - kFooterHeight);
     }
 
-    if (gridSec > 0.0)
+    if (lod.showSubdivisionLines && gridSec > 0.0 && gridSec < beatSec)
     {
         const auto firstGridIndex = juce::jmax(0, static_cast<int>(std::floor(visibleStartSec / gridSec)) - 1);
         const auto lastGridIndex = juce::jmax(firstGridIndex, static_cast<int>(std::ceil(visibleEndSec / gridSec)) + 1);
+
         for (int gridIndex = firstGridIndex; gridIndex <= lastGridIndex; ++gridIndex)
         {
             const auto gridPosSec = static_cast<double>(gridIndex) * gridSec;
             const auto x = kTimelineLeftPadding + static_cast<int>(std::round(gridPosSec * pixelsPerSecond_));
+
             const bool isBar = std::abs(std::remainder(gridPosSec, barSec)) < 0.0001;
             const bool isBeat = std::abs(std::remainder(gridPosSec, beatSec)) < 0.0001;
-            if (isBar)
+            if (isBar || isBeat)
             {
                 continue;
             }
 
-            g.setColour(isBeat ? juce::Colour::fromRGB(38, 43, 49) : juce::Colour::fromRGB(28, 31, 36));
-            g.drawLine(static_cast<float>(x), static_cast<float>(kHeaderHeight), static_cast<float>(x), static_cast<float>(getHeight() - kFooterHeight), isBeat ? 0.8f : 0.45f);
+            g.setColour(juce::Colour::fromRGB(41, 48, 56).withAlpha(0.50f));
+            g.drawLine(
+                static_cast<float>(x),
+                static_cast<float>(kHeaderHeight),
+                static_cast<float>(x),
+                static_cast<float>(getHeight() - kFooterHeight),
+                lod.subdivisionThickness);
         }
     }
 
     for (int beatIndex = firstBeatIndex; beatIndex <= lastBeatIndex; ++beatIndex)
     {
         const auto beat = static_cast<double>(beatIndex) * beatSec;
-        const auto x = kTimelineLeftPadding + static_cast<int>(beat * pixelsPerSecond_);
-        const bool isBar = beatIndex % numerator == 0;
-        g.setColour(isBar ? juce::Colour::fromRGB(47, 52, 58) : juce::Colour::fromRGB(31, 35, 40));
-        g.drawLine(static_cast<float>(x), static_cast<float>(kHeaderHeight), static_cast<float>(x), static_cast<float>(getHeight() - kFooterHeight), isBar ? 1.15f : 0.65f);
+        const auto x = kTimelineLeftPadding + static_cast<int>(std::round(beat * pixelsPerSecond_));
+        const bool isBar = (beatIndex % numerator) == 0;
+
+        if (isBar)
+        {
+            g.setColour(juce::Colour::fromRGB(58, 68, 79).withAlpha(0.50f));
+            g.drawLine(
+                static_cast<float>(x),
+                static_cast<float>(kHeaderHeight),
+                static_cast<float>(x),
+                static_cast<float>(getHeight() - kFooterHeight),
+                lod.majorThickness);
+        }
+        else if (lod.showBeatLines)
+        {
+            g.setColour(juce::Colour::fromRGB(54, 64, 75).withAlpha(0.50f));
+            g.drawLine(
+                static_cast<float>(x),
+                static_cast<float>(kHeaderHeight),
+                static_cast<float>(x),
+                static_cast<float>(getHeight() - kFooterHeight),
+                lod.beatThickness);
+        }
     }
 
     for (const auto& clip : state.clips)
@@ -284,10 +390,12 @@ void TimelineView::paintTimelineBase(juce::Graphics& g)
         {
             continue;
         }
+
         const int x = bounds.getX();
         const int width = bounds.getWidth();
         const int clipY = clipYForIndex(trackIndex);
         const auto baseColour = trackAccentForClip(state, clip, clip.selected);
+
         juce::ColourGradient clipGradient(
             baseColour.brighter(0.12f),
             static_cast<float>(x),
@@ -297,26 +405,45 @@ void TimelineView::paintTimelineBase(juce::Graphics& g)
             static_cast<float>(clipY + moon::ui::layout::kClipRowHeight),
             false);
         g.setGradientFill(clipGradient);
-        g.fillRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), static_cast<float>(moon::ui::layout::kClipRowHeight), 6.0f);
+        g.fillRoundedRectangle(
+            static_cast<float>(x),
+            static_cast<float>(clipY),
+            static_cast<float>(width),
+            static_cast<float>(moon::ui::layout::kClipRowHeight),
+            6.0f);
+
         const auto clipStartSec = juce::jmax(0.0, static_cast<double>(x - kTimelineLeftPadding) / pixelsPerSecond_);
         const auto clipEndVisibleSec = clipStartSec + static_cast<double>(width) / pixelsPerSecond_;
         const auto clipFirstBeatIndex = juce::jmax(0, static_cast<int>(std::floor(clipStartSec / beatSec)) - 1);
         const auto clipLastBeatIndex = juce::jmax(clipFirstBeatIndex, static_cast<int>(std::ceil(clipEndVisibleSec / beatSec)) + 1);
+
         for (int beatIndex = clipFirstBeatIndex; beatIndex <= clipLastBeatIndex; ++beatIndex)
         {
             const auto beat = static_cast<double>(beatIndex) * beatSec;
-            const auto beatX = kTimelineLeftPadding + static_cast<int>(beat * pixelsPerSecond_);
+            const auto beatX = kTimelineLeftPadding + static_cast<int>(std::round(beat * pixelsPerSecond_));
             if (beatX <= x + 2 || beatX >= x + width - 2)
             {
                 continue;
             }
 
-            const bool isBar = beatIndex % numerator == 0;
+            const bool isBar = (beatIndex % numerator) == 0;
             g.setColour(juce::Colours::black.withAlpha(isBar ? 0.12f : 0.05f));
-            g.drawLine(static_cast<float>(beatX), static_cast<float>(clipY + 1), static_cast<float>(beatX), static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 1), isBar ? 1.0f : 0.7f);
+            g.drawLine(
+                static_cast<float>(beatX),
+                static_cast<float>(clipY + 1),
+                static_cast<float>(beatX),
+                static_cast<float>(clipY + moon::ui::layout::kClipRowHeight - 1),
+                isBar ? 1.0f : 0.7f);
         }
+
         g.setColour(baseColour.brighter(0.4f));
-        g.drawRoundedRectangle(static_cast<float>(x), static_cast<float>(clipY), static_cast<float>(width), static_cast<float>(moon::ui::layout::kClipRowHeight), 6.0f, 1.2f);
+        g.drawRoundedRectangle(
+            static_cast<float>(x),
+            static_cast<float>(clipY),
+            static_cast<float>(width),
+            static_cast<float>(moon::ui::layout::kClipRowHeight),
+            6.0f,
+            1.2f);
     }
 }
 

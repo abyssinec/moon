@@ -39,11 +39,8 @@ private:
 
     juce::Rectangle<int> rowBounds(int rowIndex) const;
     juce::Rectangle<int> muteButtonBounds(const juce::Rectangle<int>& row) const;
-    juce::Rectangle<int> soloButtonBounds(const juce::Rectangle<int>& row) const;
-    juce::Rectangle<int> deleteButtonBounds(const juce::Rectangle<int>& row) const;
-    juce::Rectangle<int> nameBounds(const juce::Rectangle<int>& row) const;
-    juce::Rectangle<int> colorSwatchBounds(const juce::Rectangle<int>& row) const;
-    juce::Rectangle<int> gainSliderBounds(const juce::Rectangle<int>& row) const;
+    juce::Rectangle<int> accentStripBounds(const juce::Rectangle<int>& row) const;
+    juce::Rectangle<int> soloButtonBounds(const juce::Rectangle<int>& row) const;    juce::Rectangle<int> nameBounds(const juce::Rectangle<int>& row) const;    juce::Rectangle<int> gainSliderBounds(const juce::Rectangle<int>& row) const;
     juce::Rectangle<int> panSliderBounds(const juce::Rectangle<int>& row) const;
     void applyTrackGainFromPosition(moon::engine::TrackInfo& track, int x, const juce::Rectangle<int>& bounds);
     void applyTrackPanFromPosition(moon::engine::TrackInfo& track, int x, const juce::Rectangle<int>& bounds);

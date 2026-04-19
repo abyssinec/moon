@@ -39,6 +39,85 @@ double gridDivisionSec(moon::ui::TimelineGridMode mode, double tempo, int numera
     return beatSec;
 }
 
+struct TimelineRulerLod
+{
+    int barLabelStride { 1 };
+    bool showBeatNumbers { false };
+    bool showBeatLines { true };
+    bool showSubdivisionLines { false };
+    float majorLineThickness { 1.45f };
+    float beatLineThickness { 0.90f };
+    float subdivisionLineThickness { 0.55f };
+    float bandAlpha { 1.0f };
+};
+
+TimelineRulerLod computeTimelineRulerLod(float barWidthPx, float beatWidthPx, float gridWidthPx)
+{
+    TimelineRulerLod lod{};
+
+    if (barWidthPx < 28.0f)
+    {
+        lod.barLabelStride = 8;
+        lod.showBeatNumbers = false;
+        lod.showBeatLines = false;
+        lod.showSubdivisionLines = false;
+        lod.majorLineThickness = 1.20f;
+        lod.beatLineThickness = 0.0f;
+        lod.subdivisionLineThickness = 0.0f;
+        lod.bandAlpha = 0.58f;
+        return lod;
+    }
+
+    if (barWidthPx < 42.0f)
+    {
+        lod.barLabelStride = 4;
+        lod.showBeatNumbers = false;
+        lod.showBeatLines = false;
+        lod.showSubdivisionLines = false;
+        lod.majorLineThickness = 1.24f;
+        lod.beatLineThickness = 0.0f;
+        lod.subdivisionLineThickness = 0.0f;
+        lod.bandAlpha = 0.66f;
+        return lod;
+    }
+
+    if (barWidthPx < 72.0f)
+    {
+        lod.barLabelStride = 2;
+        lod.showBeatNumbers = false;
+        lod.showBeatLines = true;
+        lod.showSubdivisionLines = false;
+        lod.majorLineThickness = 1.32f;
+        lod.beatLineThickness = 0.68f;
+        lod.subdivisionLineThickness = 0.0f;
+        lod.bandAlpha = 0.76f;
+        return lod;
+    }
+
+    if (barWidthPx < 148.0f)
+    {
+        lod.barLabelStride = 1;
+        lod.showBeatNumbers = false;
+        lod.showBeatLines = true;
+        lod.showSubdivisionLines = gridWidthPx >= 13.0f;
+        lod.majorLineThickness = 1.42f;
+        lod.beatLineThickness = 0.82f;
+        lod.subdivisionLineThickness = 0.42f;
+        lod.bandAlpha = 0.90f;
+        return lod;
+    }
+
+    lod.barLabelStride = 1;
+    lod.showBeatNumbers = beatWidthPx >= 34.0f;
+    lod.showBeatLines = true;
+    lod.showSubdivisionLines = gridWidthPx >= 10.0f;
+    lod.majorLineThickness = 1.52f;
+    lod.beatLineThickness = 0.92f;
+    lod.subdivisionLineThickness = 0.50f;
+    lod.bandAlpha = 1.0f;
+    return lod;
+}
+
 juce::String gridModeLabel(moon::ui::TimelineGridMode mode)
 {
     switch (mode)
@@ -80,7 +159,7 @@ void repaintSeekViews(moon::ui::TimelineView& timelineView,
 
 void TimelineRulerBar::paint(juce::Graphics& g)
 {
-    g.fillAll(juce::Colour::fromRGB(28, 31, 36));
+    g.fillAll(juce::Colour::fromRGB(10, 14, 18));
 
     const auto pixelsPerSecond = juce::jmax(1.0, pixelsPerSecondProvider_());
     const auto tempo = juce::jmax(30.0, tempoProvider_());
@@ -88,91 +167,46 @@ void TimelineRulerBar::paint(juce::Graphics& g)
     const auto numerator = juce::jmax(1, timeSignature.first);
     const auto denominator = juce::jmax(1, timeSignature.second);
     const auto scrollX = scrollXProvider_();
-    const auto gridMode = gridModeProvider_ ? gridModeProvider_() : moon::ui::TimelineGridMode::Beat;
     const auto playheadSec = juce::jmax(0.0, playheadProvider_());
-    const double beatSec = beatDurationSec(tempo, denominator);
-    const double barSec = barDurationSec(tempo, numerator, denominator);
-    const double gridSec = gridDivisionSec(gridMode, tempo, numerator, denominator);
-    const auto beatWidthPx = static_cast<float>(beatSec * pixelsPerSecond);
-    const auto maxTimelineSec = (scrollX + getWidth()) / pixelsPerSecond;
-    const auto barWidthPx = static_cast<float>(barSec * pixelsPerSecond);
-    const bool drawBarLabels = barWidthPx >= 56.0f;
-    const bool drawBeatNumbers = beatWidthPx >= 46.0f;
-    const int labelWidth = 36;
-    const int barLabelStride = drawBarLabels ? juce::jmax(1, static_cast<int>(std::ceil(static_cast<double>(labelWidth + 16) / juce::jmax(1.0f, barWidthPx)))) : 0;
-    int lastLabelRight = -10000;
 
-    const auto firstBarIndex = juce::jmax(0, static_cast<int>(std::floor(static_cast<double>(scrollX) / juce::jmax(1.0, pixelsPerSecond) / barSec)) - 1);
+    const double barSec = barDurationSec(tempo, numerator, denominator);
+    const float barWidthPx = static_cast<float>(barSec * pixelsPerSecond);
+
+    const auto maxTimelineSec = (scrollX + getWidth()) / pixelsPerSecond;
+    const auto firstBarIndex = juce::jmax(0, static_cast<int>(std::floor(static_cast<double>(scrollX) / pixelsPerSecond / barSec)) - 1);
     const auto lastBarIndex = juce::jmax(firstBarIndex, static_cast<int>(std::ceil(maxTimelineSec / barSec)) + 1);
+
+    int barLabelStride = 1;
+    if (barWidthPx < 28.0f)      { barLabelStride = 8; }
+    else if (barWidthPx < 42.0f) { barLabelStride = 4; }
+    else if (barWidthPx < 72.0f) { barLabelStride = 2; }
+
     for (int barIndex = firstBarIndex; barIndex <= lastBarIndex; ++barIndex)
     {
-        const auto barStartX = static_cast<int>(std::round(static_cast<double>(barIndex) * barSec * pixelsPerSecond)) - scrollX;
-        const auto barEndX = static_cast<int>(std::round(static_cast<double>(barIndex + 1) * barSec * pixelsPerSecond)) - scrollX;
-        if ((barIndex % 2) == 0)
+        if ((barIndex % barLabelStride) != 0)
         {
-            g.setColour(juce::Colour::fromRGB(31, 36, 42));
-            g.fillRect(barStartX, 0, barEndX - barStartX, getHeight());
+            continue;
         }
-    }
 
-    int beatIndex = 0;
-    for (double beat = 0.0; beat <= maxTimelineSec + beatSec; beat += beatSec, ++beatIndex)
-    {
-        const auto x = static_cast<int>(beat * pixelsPerSecond) - scrollX;
-        const bool isBar = beatIndex % numerator == 0;
-        g.setColour(isBar ? juce::Colour::fromRGB(60, 66, 74) : juce::Colour::fromRGB(40, 45, 52));
-        g.drawLine(static_cast<float>(x), 0.0f, static_cast<float>(x), static_cast<float>(getHeight()), isBar ? 1.35f : 0.85f);
-        if (isBar && drawBarLabels)
+        const int centerX = static_cast<int>(std::round(static_cast<double>(barIndex) * barSec * pixelsPerSecond)) - scrollX;
+        if (centerX < -40 || centerX > getWidth() + 40)
         {
-            const auto barIndex = static_cast<int>(std::floor(beat / barSec)) + 1;
-            if (((barIndex - 1) % barLabelStride) == 0)
-            {
-                const int labelX = x + static_cast<int>(std::round((barWidthPx - static_cast<float>(labelWidth)) * 0.5f));
-                if (labelX >= 2 && labelX >= lastLabelRight + 10 && labelX + labelWidth <= getWidth() - 2)
-                {
-                    g.setColour(juce::Colours::white.withAlpha(0.96f));
-                    g.setFont(juce::FontOptions(13.5f, juce::Font::bold));
-                    g.drawText(juce::String(barIndex), labelX, 6, labelWidth, 18, juce::Justification::centred);
-                    lastLabelRight = labelX + labelWidth;
-                }
-            }
+            continue;
         }
-        else if (!isBar && drawBeatNumbers)
-        {
-            const auto beatInBar = (beatIndex % numerator) + 1;
-            const int beatLabelX = x + static_cast<int>(std::round((beatWidthPx - 22.0f) * 0.5f));
-            if (beatLabelX >= 2 && beatLabelX + 22 <= getWidth() - 2)
-            {
-                g.setColour(juce::Colours::white.withAlpha(0.38f));
-                g.setFont(juce::FontOptions(11.0f));
-                g.drawText(juce::String(beatInBar), beatLabelX, 8, 22, 16, juce::Justification::centred);
-            }
-        }
-    }
 
-    if (gridSec > 0.0 && gridSec < barSec)
-    {
-        const auto firstGridIndex = juce::jmax(0, static_cast<int>(std::floor((static_cast<double>(scrollX) / juce::jmax(1.0, pixelsPerSecond)) / gridSec)) - 1);
-        const auto lastGridIndex = juce::jmax(firstGridIndex, static_cast<int>(std::ceil(maxTimelineSec / gridSec)) + 1);
-        for (int gridIndex = firstGridIndex; gridIndex <= lastGridIndex; ++gridIndex)
-        {
-            const auto gridSecPos = static_cast<double>(gridIndex) * gridSec;
-            const auto x = static_cast<int>(std::round(gridSecPos * pixelsPerSecond)) - scrollX;
-            const auto beatMultiple = std::abs(std::remainder(gridSecPos, beatSec)) < 0.0001;
-            const auto barMultiple = std::abs(std::remainder(gridSecPos, barSec)) < 0.0001;
-            if (barMultiple)
-            {
-                continue;
-            }
+        const auto labelValue = barIndex + 1;
+        const int labelWidth = juce::jlimit(18, 56, static_cast<int>(barWidthPx) - 4);
+        const int labelX = centerX - (labelWidth / 2);
 
-            g.setColour(beatMultiple ? juce::Colour::fromRGB(44, 50, 57) : juce::Colour::fromRGB(35, 39, 45));
-            g.drawLine(static_cast<float>(x), 0.0f, static_cast<float>(x), static_cast<float>(getHeight()), beatMultiple ? 0.9f : 0.55f);
-        }
+        g.setColour(juce::Colours::white.withAlpha(0.94f));
+        g.setFont(juce::FontOptions(barWidthPx >= 120.0f ? 13.0f : (barWidthPx >= 54.0f ? 11.5f : 10.0f), juce::Font::bold));
+        g.drawText(juce::String(labelValue), labelX, 5, labelWidth, 18, juce::Justification::centred);
     }
 
     const auto playheadX = static_cast<float>(playheadSec * pixelsPerSecond - scrollX);
     g.setColour(juce::Colour::fromRGB(255, 182, 32));
     g.drawLine(playheadX, 7.0f, playheadX, static_cast<float>(getHeight()), 1.6f);
+
     juce::Path marker;
     marker.startNewSubPath(playheadX - 5.0f, 0.0f);
     marker.lineTo(playheadX + 5.0f, 0.0f);
@@ -214,37 +248,59 @@ void TimelineOverviewBar::paint(juce::Graphics& g)
     const auto contentWidth = juce::jmax(1, contentWidthProvider_());
     const auto viewWidth = juce::jmax(1, viewWidthProvider_());
     const auto scrollX = juce::jlimit(0, juce::jmax(0, contentWidth - viewWidth), scrollXProvider_());
+
     const float width = static_cast<float>(getWidth());
     const float height = static_cast<float>(getHeight());
 
-    g.setColour(juce::Colour::fromRGB(26, 29, 34));
+    g.setColour(juce::Colour::fromRGB(24, 27, 32));
     g.fillRoundedRectangle(0.0f, 0.0f, width, height, 4.0f);
 
-    const double rawStep = totalDurationSec / 10.0;
-    const double stepSec =
-        rawStep <= 5.0 ? 5.0 :
-        rawStep <= 10.0 ? 10.0 :
-        rawStep <= 15.0 ? 15.0 :
-        rawStep <= 30.0 ? 30.0 : 60.0;
+    const double visibleStartSec = totalDurationSec * (static_cast<double>(scrollX) / static_cast<double>(contentWidth));
+    const double visibleDurationSec = juce::jmax(0.1, totalDurationSec * (static_cast<double>(viewWidth) / static_cast<double>(contentWidth)));
+    const double visibleEndSec = juce::jmin(totalDurationSec, visibleStartSec + visibleDurationSec);
 
     const float visibleX = width * static_cast<float>(scrollX) / static_cast<float>(contentWidth);
     const float visibleW = juce::jmax(26.0f, width * static_cast<float>(viewWidth) / static_cast<float>(contentWidth));
+
     g.setColour(juce::Colour::fromRGB(49, 52, 58).withAlpha(0.82f));
     g.fillRoundedRectangle(visibleX, 2.0f, juce::jmin(visibleW, width - visibleX), height - 4.0f, 4.0f);
 
-    for (double sec = 0.0; sec <= totalDurationSec + stepSec; sec += stepSec)
+    const double rawStep = visibleDurationSec / 8.0;
+    double stepSec = 1.0;
+
+    if (rawStep <= 1.0)       { stepSec = 1.0; }
+    else if (rawStep <= 2.0)  { stepSec = 2.0; }
+    else if (rawStep <= 5.0)  { stepSec = 5.0; }
+    else if (rawStep <= 10.0) { stepSec = 10.0; }
+    else if (rawStep <= 15.0) { stepSec = 15.0; }
+    else if (rawStep <= 30.0) { stepSec = 30.0; }
+    else if (rawStep <= 60.0) { stepSec = 60.0; }
+    else if (rawStep <= 120.0){ stepSec = 120.0; }
+    else                      { stepSec = 300.0; }
+
+    const double firstTickSec = std::floor(visibleStartSec / stepSec) * stepSec;
+
+    for (double sec = firstTickSec; sec <= visibleEndSec + stepSec; sec += stepSec)
     {
-        const auto x = static_cast<float>((sec / totalDurationSec) * width);
-        g.setColour(juce::Colours::white.withAlpha(0.18f));
-        g.drawLine(x, height - 8.0f, x, height - 2.0f, 1.0f);
+        const double localRatio = (sec - visibleStartSec) / visibleDurationSec;
+        const float x = static_cast<float>(localRatio * width);
+
+        if (x < -1.0f || x > width + 1.0f)
+        {
+            continue;
+        }
+
+        g.setColour(juce::Colours::white.withAlpha(0.20f));
+        g.drawLine(x, height - 9.0f, x, height - 2.0f, 1.0f);
 
         const int totalSeconds = static_cast<int>(std::round(sec));
         const int minutes = totalSeconds / 60;
         const int seconds = totalSeconds % 60;
         const auto label = juce::String::formatted("%02d:%02d", minutes, seconds);
-        g.setColour(juce::Colours::white.withAlpha(0.58f));
-        g.setFont(juce::FontOptions(11.0f));
-        g.drawText(label, static_cast<int>(x) + 4, 0, 44, 12, juce::Justification::centredLeft);
+
+        g.setColour(juce::Colours::white.withAlpha(0.62f));
+        g.setFont(juce::FontOptions(10.5f));
+        g.drawText(label, static_cast<int>(x) + 4, 0, 52, 12, juce::Justification::centredLeft);
     }
 }
 

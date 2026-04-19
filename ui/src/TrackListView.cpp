@@ -96,17 +96,22 @@ void TrackListView::paint(juce::Graphics& g)
         const bool isSelected = track.id == projectManager_.state().uiState.selectedTrackId;
         const bool isDropHover = track.id == dropHoverTrackId_;
         const auto accent = trackAccent(track, isSelected, static_cast<int>(i));
-        g.setColour(juce::Colour::fromRGB(22, 24, 29));
+
+        g.setColour(juce::Colour::fromRGB(24, 27, 32));
         g.fillRoundedRectangle(row.toFloat(), 6.0f);
+
+        const auto accentBounds = accentStripBounds(row);
         g.setColour(accent);
-        g.fillRoundedRectangle(row.removeFromLeft(5).toFloat(), 3.0f);
+        g.fillRoundedRectangle(accentBounds.toFloat(), 3.0f);
         row.translate(5, 0);
+
         if (isSelected)
         {
             g.setColour(accent.withAlpha(0.18f));
             g.fillRoundedRectangle(row.toFloat(), 6.0f);
             g.setColour(juce::Colours::white);
         }
+
         if (isDropHover)
         {
             g.setColour(accent.withAlpha(0.18f));
@@ -114,32 +119,20 @@ void TrackListView::paint(juce::Graphics& g)
             g.setColour(accent.withAlpha(0.82f));
             g.drawRoundedRectangle(row.toFloat(), 6.0f, 1.4f);
         }
+
         auto content = row.reduced(9, 6);
         auto topRow = content.removeFromTop(22);
-        auto numberBox = topRow.removeFromLeft(20);
-        g.setColour(accent.withAlpha(0.95f));
-        g.fillRoundedRectangle(numberBox.toFloat(), 4.0f);
-        g.setColour(juce::Colours::black.withAlpha(0.9f));
-        g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-        g.drawText(juce::String(static_cast<int>(i) + 1), numberBox, juce::Justification::centred);
 
-        topRow.removeFromLeft(13);
         g.setColour(juce::Colours::white.withAlpha(0.94f));
-        g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
         if (renamingTrackId_ != track.id)
         {
             g.drawText(track.name, nameBounds(rowBounds(static_cast<int>(i))), juce::Justification::centredLeft);
         }
 
-        const auto swatchBounds = colorSwatchBounds(rowBounds(static_cast<int>(i)));
-        g.setColour(accent);
-        g.fillRoundedRectangle(swatchBounds.toFloat(), 4.0f);
-        g.setColour(juce::Colours::white.withAlpha(0.28f));
-        g.drawRoundedRectangle(swatchBounds.toFloat(), 4.0f, 1.0f);
-
         auto muteBounds = muteButtonBounds(rowBounds(static_cast<int>(i)));
         auto soloBounds = soloButtonBounds(rowBounds(static_cast<int>(i)));
-        auto deleteBounds = deleteButtonBounds(rowBounds(static_cast<int>(i)));
+
         g.setColour(track.mute ? juce::Colour::fromRGB(180, 70, 70) : juce::Colour::fromRGB(56, 60, 66));
         g.fillRoundedRectangle(muteBounds.toFloat(), 5.0f);
         g.setColour(juce::Colours::white);
@@ -151,24 +144,23 @@ void TrackListView::paint(juce::Graphics& g)
         g.setColour(juce::Colours::white);
         g.drawText("S", soloBounds, juce::Justification::centred);
 
-        g.setColour(juce::Colour::fromRGB(56, 60, 66));
-        g.fillRoundedRectangle(deleteBounds.toFloat(), 5.0f);
-        g.setColour(juce::Colours::white.withAlpha(tracks.size() > 1 ? 0.92f : 0.35f));
-        g.drawText("X", deleteBounds, juce::Justification::centred);
-
         auto statsRow = content.removeFromTop(16);
         const auto panBounds = panSliderBounds(row);
-        g.setColour(juce::Colours::lightgrey.withAlpha(0.72f));
-        g.setFont(juce::FontOptions(9.0f));
-        g.drawText("Vol " + juce::String(track.gainDb, 1), statsRow.removeFromLeft(68), juce::Justification::centredLeft);
-        g.drawText("PAN", statsRow.removeFromLeft(24), juce::Justification::centredLeft);
+
+        g.setColour(juce::Colours::lightgrey.withAlpha(0.84f));
+        g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+        g.drawText("Gain " + juce::String(track.gainDb, 1), statsRow.removeFromLeft(82), juce::Justification::centredLeft);
+        g.drawText("PAN", statsRow.removeFromLeft(30), juce::Justification::centredLeft);
+
         g.setColour(juce::Colour::fromRGB(48, 53, 60));
         g.fillRoundedRectangle(panBounds.toFloat(), 6.0f);
         g.setColour(juce::Colour::fromRGB(71, 78, 90));
         g.drawRoundedRectangle(panBounds.toFloat(), 6.0f, 1.0f);
+
         const auto panCenter = panBounds.getX() + 8 + static_cast<int>(((track.pan + 1.0) * 0.5) * static_cast<double>(juce::jmax(1, panBounds.getWidth() - 16)));
         g.setColour(juce::Colour::fromRGB(31, 181, 235));
         g.fillEllipse(static_cast<float>(panCenter - 4), static_cast<float>(panBounds.getCentreY() - 4), 8.0f, 8.0f);
+
         g.setColour(juce::Colours::white.withAlpha(0.95f));
         g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
         g.drawText(panLabel(track.pan), panBounds.withTrimmedLeft(10), juce::Justification::centredLeft);
@@ -215,22 +207,11 @@ void TrackListView::mouseDown(const juce::MouseEvent& event)
             repaint();
             return;
         }
-
-        if (deleteButtonBounds(row).contains(event.getPosition()))
-        {
-            if (onTrackDeleted_)
-            {
-                onTrackDeleted_(track.id);
-            }
-            repaint();
-            return;
-        }
-
-        if (colorSwatchBounds(row).contains(event.getPosition()))
-        {
-            showTrackColorMenu(track, colorSwatchBounds(row));
-            return;
-        }
+        if (accentStripBounds(row).expanded(3, 0).contains(event.getPosition()))
+{
+    showTrackColorMenu(track, accentStripBounds(row));
+    return;
+}
 
         if (gainSliderBounds(row).expanded(0, 6).contains(event.getPosition()))
         {
@@ -353,6 +334,11 @@ juce::Rectangle<int> TrackListView::rowBounds(int rowIndex) const
     return {4, moon::ui::layout::trackRowY(rowIndex), getWidth() - 8, moon::ui::layout::kTrackRowHeight};
 }
 
+juce::Rectangle<int> TrackListView::accentStripBounds(const juce::Rectangle<int>& row) const
+{
+    return {row.getX(), row.getY(), 5, row.getHeight()};
+}
+
 juce::Rectangle<int> TrackListView::muteButtonBounds(const juce::Rectangle<int>& row) const
 {
     return {row.getRight() - 56, row.getY() + 6, 20, 20};
@@ -363,19 +349,9 @@ juce::Rectangle<int> TrackListView::soloButtonBounds(const juce::Rectangle<int>&
     return {row.getRight() - 31, row.getY() + 6, 20, 20};
 }
 
-juce::Rectangle<int> TrackListView::deleteButtonBounds(const juce::Rectangle<int>& row) const
-{
-    return {row.getRight() - 81, row.getY() + 6, 20, 20};
-}
-
 juce::Rectangle<int> TrackListView::nameBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getX() + 42, row.getY() + 5, row.getWidth() - 148, 22};
-}
-
-juce::Rectangle<int> TrackListView::colorSwatchBounds(const juce::Rectangle<int>& row) const
-{
-    return {row.getX() + 25, row.getY() + 6, 10, 20};
+    return {row.getX() + 14, row.getY() + 4, row.getWidth() - 96, 24};
 }
 
 juce::Rectangle<int> TrackListView::gainSliderBounds(const juce::Rectangle<int>& row) const
@@ -385,7 +361,7 @@ juce::Rectangle<int> TrackListView::gainSliderBounds(const juce::Rectangle<int>&
 
 juce::Rectangle<int> TrackListView::panSliderBounds(const juce::Rectangle<int>& row) const
 {
-    return {row.getRight() - 68, row.getY() + 34, 58, 12};
+    return {row.getRight() - 66, row.getY() + 34, 52, 12};
 }
 
 void TrackListView::applyTrackGainFromPosition(moon::engine::TrackInfo& track, int x, const juce::Rectangle<int>& bounds)
