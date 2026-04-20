@@ -54,6 +54,8 @@ struct UIStateSnapshot
     bool hasSelectedRegion{false};
     double selectedRegionStartSec{0.0};
     double selectedRegionEndSec{0.0};
+    int selectedRegionStartTrackIndex{-1};
+    int selectedRegionEndTrackIndex{-1};
 };
 
 struct EngineIntegrationState

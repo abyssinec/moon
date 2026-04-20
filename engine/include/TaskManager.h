@@ -7,6 +7,7 @@
 
 #include "AIJobClient.h"
 #include "Logger.h"
+#include "MusicGeneration.h"
 #include "ProjectState.h"
 
 namespace moon::engine
@@ -33,6 +34,9 @@ struct PendingInsertion
     double startSec{0.0};
     double durationSec{0.0};
     std::string prompt;
+    std::string targetTrackId;
+    std::string preferredTrackName;
+    MusicGenerationRequest musicRequest;
 };
 
 class TaskManager
@@ -52,6 +56,10 @@ public:
                               double startSec,
                               double durationSec,
                               const std::string& prompt);
+    std::string queueMusicGeneration(const MusicGenerationRequest& request,
+                                     const std::string& targetTrackId,
+                                     const std::string& preferredTrackName,
+                                     double startSec);
     void poll(ProjectState& state, TimelineFacade& timeline);
     std::size_t activeTaskCount() const;
     std::size_t completedTaskCount() const;

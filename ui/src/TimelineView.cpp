@@ -17,6 +17,18 @@ constexpr int kFooterHeight = 0;
 constexpr int kWaveformInsetX = 2;
 constexpr int kWaveformInsetTop = 4;
 constexpr int kWaveformInsetBottom = 4;
+constexpr int kClipMoveBandHeight = 10;
+
+int selectionLaneTopForIndex(int trackIndex)
+{
+    const auto clipTop = moon::ui::layout::trackRowY(trackIndex);
+    if (trackIndex <= 0)
+    {
+        return clipTop;
+    }
+
+    return clipTop - (moon::ui::layout::kTrackRowStep - moon::ui::layout::kClipRowHeight);
+}
 
 juce::Colour parseTrackColour(const std::string& colorHex)
 {
@@ -675,10 +687,46 @@ void TimelineView::paintClipOverlays(juce::Graphics& g)
     {
         const auto regionX = kTimelineLeftPadding + static_cast<int>(state.uiState.selectedRegionStartSec * pixelsPerSecond_);
         const auto regionW = juce::jmax(2, static_cast<int>((state.uiState.selectedRegionEndSec - state.uiState.selectedRegionStartSec) * pixelsPerSecond_));
-        g.setColour(juce::Colours::yellow.withAlpha(0.18f));
-        g.fillRect(regionX, 28, regionW, getHeight() - 36);
-        g.setColour(juce::Colours::yellow);
-        g.drawRect(regionX, 28, regionW, getHeight() - 36, 1);
+        int regionStartTrackIndex = state.uiState.selectedRegionStartTrackIndex;
+        int regionEndTrackIndex = state.uiState.selectedRegionEndTrackIndex;
+
+        if ((!state.tracks.empty()) && (regionStartTrackIndex < 0 || regionEndTrackIndex < 0))
+        {
+            if (!state.uiState.selectedTrackId.empty())
+            {
+                for (std::size_t i = 0; i < state.tracks.size(); ++i)
+                {
+                    if (state.tracks[i].id == state.uiState.selectedTrackId)
+                    {
+                        regionStartTrackIndex = static_cast<int>(i);
+                        regionEndTrackIndex = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+
+            if (regionStartTrackIndex < 0 || regionEndTrackIndex < 0)
+            {
+                // Older sessions may only have time-range data; keep the region visible instead of hiding it.
+                regionStartTrackIndex = 0;
+                regionEndTrackIndex = static_cast<int>(state.tracks.size()) - 1;
+            }
+        }
+
+        if (regionStartTrackIndex >= 0 && regionEndTrackIndex >= 0 && !state.tracks.empty())
+        {
+            regionStartTrackIndex = juce::jlimit(0, static_cast<int>(state.tracks.size()) - 1, regionStartTrackIndex);
+            regionEndTrackIndex = juce::jlimit(0, static_cast<int>(state.tracks.size()) - 1, regionEndTrackIndex);
+            const auto topTrackIndex = std::min(regionStartTrackIndex, regionEndTrackIndex);
+            const auto bottomTrackIndex = std::max(regionStartTrackIndex, regionEndTrackIndex);
+            const auto regionY = selectionLaneTopForIndex(topTrackIndex);
+            const auto regionBottom = clipYForIndex(bottomTrackIndex) + moon::ui::layout::kClipRowHeight;
+
+            g.setColour(juce::Colours::yellow.withAlpha(0.18f));
+            g.fillRect(regionX, regionY, regionW, regionBottom - regionY);
+            g.setColour(juce::Colours::yellow);
+            g.drawRect(regionX, regionY, regionW, regionBottom - regionY, 1);
+        }
     }
 
     const auto playheadX = kTimelineLeftPadding + static_cast<int>(state.uiState.playheadSec * pixelsPerSecond_);
@@ -691,10 +739,13 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
     auto& state = projectManager_.state();
     draggingPlayhead_ = false;
     draggingRegion_ = false;
+    pendingRegionDrag_ = false;
     draggingClip_ = false;
     clipMovedDuringDrag_ = false;
     clipDragMode_ = ClipDragMode::None;
     draggedClipId_.clear();
+    dragStartTrackIndex_ = -1;
+    dragAnchorPoint_ = event.getPosition();
 
     for (std::size_t i = 0; i < state.clips.size(); ++i)
     {
@@ -703,8 +754,9 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
 
         if (clipArea.contains(event.getPosition()))
         {
-            timeline_.selectClip(state, clip.id);
             timeline_.selectTrack(state, clip.trackId);
+            timeline_.selectClip(state, clip.id);
+            timeline_.clearSelectedRegion(state);
             if (event.mods.isRightButtonDown())
             {
                 juce::PopupMenu menu;
@@ -727,6 +779,18 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
                 return;
             }
 
+            const auto localY = event.y - clipArea.getY();
+            if (localY > kClipMoveBandHeight)
+            {
+                pendingRegionDrag_ = true;
+                draggingRegion_ = false;
+                dragStartSec_ = xToTime(event.x);
+                dragStartTrackIndex_ = trackIndexForY(event.y);
+                dragAnchorPoint_ = event.getPosition();
+                repaint();
+                return;
+            }
+
             clipDragMode_ = hitTestClipDragMode(clipArea, event.getPosition());
             if (beginClipDragCallback_)
             {
@@ -741,9 +805,15 @@ void TimelineView::mouseDown(const juce::MouseEvent& event)
         }
     }
 
-    draggingRegion_ = true;
+    const auto clickedTrackId = nearestTrackIdForY(event.y);
+    dragStartTrackIndex_ = trackIndexForY(event.y);
+    if (!clickedTrackId.empty())
+    {
+        timeline_.selectTrack(state, clickedTrackId);
+    }
+    timeline_.clearSelectedRegion(state);
+    pendingRegionDrag_ = true;
     dragStartSec_ = xToTime(event.x);
-    timeline_.setSelectedRegion(state, dragStartSec_, dragStartSec_);
     repaint();
 }
 
@@ -803,12 +873,30 @@ void TimelineView::mouseDrag(const juce::MouseEvent& event)
         return;
     }
 
+    if (pendingRegionDrag_)
+    {
+        const auto dragDelta = event.getPosition() - dragAnchorPoint_;
+        // Empty-lane click should select the track; region selection only starts after a real drag.
+        if (std::abs(dragDelta.x) < 3 && std::abs(dragDelta.y) < 3)
+        {
+            return;
+        }
+
+        pendingRegionDrag_ = false;
+        draggingRegion_ = true;
+    }
+
     if (!draggingRegion_)
     {
         return;
     }
 
-    timeline_.setSelectedRegion(projectManager_.state(), dragStartSec_, xToTime(event.x));
+    timeline_.setSelectedRegion(
+        projectManager_.state(),
+        dragStartSec_,
+        xToTime(event.x),
+        dragStartTrackIndex_,
+        trackIndexForY(event.y));
     repaint();
 }
 
@@ -831,13 +919,25 @@ void TimelineView::mouseUp(const juce::MouseEvent& event)
         return;
     }
 
+    if (pendingRegionDrag_)
+    {
+        pendingRegionDrag_ = false;
+        repaint();
+        return;
+    }
+
     if (!draggingRegion_)
     {
         return;
     }
 
     draggingRegion_ = false;
-    timeline_.setSelectedRegion(projectManager_.state(), dragStartSec_, xToTime(event.x));
+    timeline_.setSelectedRegion(
+        projectManager_.state(),
+        dragStartSec_,
+        xToTime(event.x),
+        dragStartTrackIndex_,
+        trackIndexForY(event.y));
     repaint();
 }
 
@@ -981,11 +1081,22 @@ std::string TimelineView::nearestTrackIdForY(int contentY) const
         return {};
     }
 
-    const auto clampedIndex = juce::jlimit(
+    const auto clampedIndex = trackIndexForY(contentY);
+    return tracks[static_cast<std::size_t>(clampedIndex)].id;
+}
+
+int TimelineView::trackIndexForY(int contentY) const
+{
+    const auto& tracks = projectManager_.state().tracks;
+    if (tracks.empty())
+    {
+        return -1;
+    }
+
+    return juce::jlimit(
         0,
         static_cast<int>(tracks.size()) - 1,
         static_cast<int>(std::floor(static_cast<double>(contentY - moon::ui::layout::kTrackRowStartY) / static_cast<double>(moon::ui::layout::kTrackRowStep))));
-    return tracks[static_cast<std::size_t>(clampedIndex)].id;
 }
 
 double TimelineView::timeForContentX(int contentX) const

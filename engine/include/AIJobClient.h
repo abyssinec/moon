@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "Logger.h"
+#include "MusicGeneration.h"
 
 namespace moon::engine
 {
@@ -20,6 +21,7 @@ struct ModelsResponse
     std::vector<std::string> stems;
     std::vector<std::string> rewrite;
     std::vector<std::string> addLayer;
+    std::vector<std::string> musicGeneration;
 };
 
 struct JobStatusResponse
@@ -56,6 +58,7 @@ public:
                                           const std::string& prompt,
                                           const std::string& modelName,
                                           double durationSec) = 0;
+    virtual std::string createMusicGenerationJob(const MusicGenerationRequest& request) = 0;
     virtual JobStatusResponse getJob(const std::string& jobId) = 0;
     virtual JobResultResponse getJobResult(const std::string& jobId) const = 0;
     virtual bool backendReachable() const noexcept = 0;
@@ -79,6 +82,7 @@ public:
                                   const std::string& prompt,
                                   const std::string& modelName,
                                   double durationSec) override;
+    std::string createMusicGenerationJob(const MusicGenerationRequest& request) override;
     JobStatusResponse getJob(const std::string& jobId) override;
     JobResultResponse getJobResult(const std::string& jobId) const override;
     bool backendReachable() const noexcept override { return backendReachable_; }

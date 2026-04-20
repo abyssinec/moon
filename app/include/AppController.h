@@ -5,12 +5,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "AIJobClient.h"
 #include "EngineRuntimeCoordinator.h"
 #include "ExportService.h"
 #include "LocalJobClient.h"
 #include "Logger.h"
+#include "MusicGeneration.h"
 #include "ClipOperations.h"
 #include "ProjectManager.h"
 #include "SettingsService.h"
@@ -36,6 +38,7 @@ public:
     bool separateStemsForSelectedClip();
     bool rewriteSelectedRegion(const std::string& prompt);
     bool addGeneratedLayer(const std::string& prompt);
+    std::optional<std::string> generateMusic(const moon::engine::MusicGenerationRequest& request);
     bool exportFullMix(const std::string& outputPath);
     bool exportSelectedRegion(const std::string& outputPath);
     bool exportStemTracks(const std::string& outputDirectory);
@@ -87,6 +90,7 @@ public:
     int projectTimeSignatureDenominator() const noexcept { return projectManager_->state().timeSignatureDenominator; }
     bool setProjectTempo(double tempo);
     bool setProjectTimeSignature(int numerator, int denominator);
+    std::vector<std::string> availableMusicGenerationModels() const;
     bool hasUnsavedChanges() const noexcept { return projectDirty_; }
     bool hasStalePreview() const noexcept { return previewPlaybackDirty_; }
     std::optional<std::string> projectFilePath() const;

@@ -207,11 +207,12 @@ void TrackListView::mouseDown(const juce::MouseEvent& event)
             repaint();
             return;
         }
+
         if (accentStripBounds(row).expanded(3, 0).contains(event.getPosition()))
-{
-    showTrackColorMenu(track, accentStripBounds(row));
-    return;
-}
+        {
+            showTrackColorMenu(track, accentStripBounds(row));
+            return;
+        }
 
         if (gainSliderBounds(row).expanded(0, 6).contains(event.getPosition()))
         {

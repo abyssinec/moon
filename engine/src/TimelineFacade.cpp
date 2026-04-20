@@ -7,6 +7,15 @@ namespace moon::engine
 {
 namespace
 {
+void clearSelectedRegionInternal(ProjectState& state)
+{
+    state.uiState.hasSelectedRegion = false;
+    state.uiState.selectedRegionStartSec = 0.0;
+    state.uiState.selectedRegionEndSec = 0.0;
+    state.uiState.selectedRegionStartTrackIndex = -1;
+    state.uiState.selectedRegionEndTrackIndex = -1;
+}
+
 bool selectClipInternal(ProjectState& state, const std::string& clipId)
 {
     bool found = false;
@@ -17,8 +26,19 @@ bool selectClipInternal(ProjectState& state, const std::string& clipId)
         if (clip.selected)
         {
             state.uiState.selectedClipId = clip.id;
+            state.uiState.selectedTrackId = clip.trackId;
         }
     }
+
+    if (found)
+    {
+        clearSelectedRegionInternal(state);
+    }
+    else
+    {
+        state.uiState.selectedClipId.clear();
+    }
+
     return found;
 }
 }
@@ -77,6 +97,11 @@ bool TimelineFacade::selectTrack(ProjectState& state, const std::string& trackId
         if (track.id == trackId)
         {
             state.uiState.selectedTrackId = trackId;
+            state.uiState.selectedClipId.clear();
+            for (auto& clip : state.clips)
+            {
+                clip.selected = false;
+            }
             return true;
         }
     }
@@ -85,16 +110,34 @@ bool TimelineFacade::selectTrack(ProjectState& state, const std::string& trackId
 
 void TimelineFacade::setSelectedRegion(ProjectState& state, double startSec, double endSec)
 {
+    int trackIndex = -1;
+    if (!state.uiState.selectedTrackId.empty())
+    {
+        for (std::size_t i = 0; i < state.tracks.size(); ++i)
+        {
+            if (state.tracks[i].id == state.uiState.selectedTrackId)
+            {
+                trackIndex = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    setSelectedRegion(state, startSec, endSec, trackIndex, trackIndex);
+}
+
+void TimelineFacade::setSelectedRegion(ProjectState& state, double startSec, double endSec, int startTrackIndex, int endTrackIndex)
+{
     state.uiState.hasSelectedRegion = true;
     state.uiState.selectedRegionStartSec = std::min(startSec, endSec);
     state.uiState.selectedRegionEndSec = std::max(startSec, endSec);
+    state.uiState.selectedRegionStartTrackIndex = std::min(startTrackIndex, endTrackIndex);
+    state.uiState.selectedRegionEndTrackIndex = std::max(startTrackIndex, endTrackIndex);
 }
 
 void TimelineFacade::clearSelectedRegion(ProjectState& state)
 {
-    state.uiState.hasSelectedRegion = false;
-    state.uiState.selectedRegionStartSec = 0.0;
-    state.uiState.selectedRegionEndSec = 0.0;
+    clearSelectedRegionInternal(state);
 }
 
 bool TimelineFacade::moveClip(ProjectState& state, const std::string& clipId, double newStartSec)

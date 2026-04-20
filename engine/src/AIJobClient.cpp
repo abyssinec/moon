@@ -100,6 +100,17 @@ std::string jsonEscape(const std::string& text)
     return result;
 }
 
+std::string buildMusicPrompt(const MusicGenerationRequest& request)
+{
+    std::string prompt = std::string(musicGenerationCategoryLabel(request.category));
+    if (!request.stylesPrompt.empty())
+    {
+        prompt += ": ";
+        prompt += request.stylesPrompt;
+    }
+    return prompt;
+}
+
 struct BackendEndpoint
 {
     std::wstring host{L"127.0.0.1"};
@@ -205,6 +216,14 @@ ModelsResponse AIJobClient::models() const
             result.rewrite.push_back("ace_step_stub");
             result.addLayer.push_back("ace_step_stub");
         }
+        if (response->find("ace_step") != std::string::npos)
+        {
+            result.musicGeneration.push_back("ace_step");
+        }
+        else if (response->find("ace_step_stub") != std::string::npos)
+        {
+            result.musicGeneration.push_back("ace_step_stub");
+        }
         if (!result.stems.empty() || !result.rewrite.empty() || !result.addLayer.empty())
         {
             return result;
@@ -213,7 +232,7 @@ ModelsResponse AIJobClient::models() const
 
     markBackendFallback();
     logger_.info("Stub model listing against " + backendUrl_);
-    return ModelsResponse{{"demucs"}, {"ace_step_stub"}, {"ace_step_stub"}};
+    return ModelsResponse{{"demucs"}, {"ace_step_stub"}, {"ace_step_stub"}, {"ace_step_stub"}};
 }
 
 std::string AIJobClient::createStemsJob(const std::string& inputAudioPath, const std::string& modelName)
@@ -282,6 +301,13 @@ std::string AIJobClient::createAddLayerJob(const std::string& inputAudioPath,
 
     markBackendFallback();
     return createJob("add-layer", inputAudioPath, modelName, prompt, durationSec);
+}
+
+std::string AIJobClient::createMusicGenerationJob(const MusicGenerationRequest& request)
+{
+    const auto prompt = buildMusicPrompt(request);
+    markBackendFallback();
+    return createJob("music-generation", "", request.selectedModel.empty() ? "ace_step_stub" : request.selectedModel, prompt, request.durationSec);
 }
 
 JobStatusResponse AIJobClient::getJob(const std::string& jobId)
@@ -612,7 +638,7 @@ std::string AIJobClient::createJob(const std::string& type,
     }
     else
     {
-        const auto suffix = type == "rewrite" ? "_rewrite.wav" : "_layer.wav";
+        const auto suffix = type == "rewrite" ? "_rewrite.wav" : (type == "music-generation" ? "_music.wav" : "_layer.wav");
         job.result.outputAudioPath = basePath.string() + suffix;
         writeStubWav(job.result.outputAudioPath, std::max(0.1, durationSec));
     }

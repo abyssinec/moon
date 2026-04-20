@@ -113,7 +113,9 @@ bool SessionSerializer::save(const ProjectState& state, const std::filesystem::p
     out << "    \"selected_track_id\": \"" << escape(state.uiState.selectedTrackId) << "\",\n";
     out << "    \"has_selected_region\": " << (state.uiState.hasSelectedRegion ? "true" : "false") << ",\n";
     out << "    \"selected_region_start_sec\": " << state.uiState.selectedRegionStartSec << ",\n";
-    out << "    \"selected_region_end_sec\": " << state.uiState.selectedRegionEndSec << "\n";
+    out << "    \"selected_region_end_sec\": " << state.uiState.selectedRegionEndSec << ",\n";
+    out << "    \"selected_region_start_track_index\": " << state.uiState.selectedRegionStartTrackIndex << ",\n";
+    out << "    \"selected_region_end_track_index\": " << state.uiState.selectedRegionEndTrackIndex << "\n";
     out << "  }\n";
     out << "}\n";
     return true;
@@ -145,6 +147,8 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     state.uiState.hasSelectedRegion = extractBool(content, "has_selected_region", false);
     state.uiState.selectedRegionStartSec = extractDouble(content, "selected_region_start_sec", 0.0);
     state.uiState.selectedRegionEndSec = extractDouble(content, "selected_region_end_sec", 0.0);
+    state.uiState.selectedRegionStartTrackIndex = extractSignedInt(content, "selected_region_start_track_index", -1);
+    state.uiState.selectedRegionEndTrackIndex = extractSignedInt(content, "selected_region_end_track_index", -1);
     state.engineState.timelineBackend = extractString(content, "timeline_backend", "lightweight");
     state.engineState.transportBackend = extractString(content, "transport_backend", "lightweight");
     state.engineState.tracktionSyncState = extractString(content, "tracktion_sync_state", "idle");
@@ -325,6 +329,17 @@ double SessionSerializer::extractDouble(const std::string& content, const std::s
 int SessionSerializer::extractInt(const std::string& content, const std::string& key, int fallback)
 {
     const std::regex expr("\"" + key + "\"\\s*:\\s*([0-9]+)");
+    std::smatch match;
+    if (std::regex_search(content, match, expr) && match.size() > 1)
+    {
+        return std::stoi(match[1].str());
+    }
+    return fallback;
+}
+
+int SessionSerializer::extractSignedInt(const std::string& content, const std::string& key, int fallback)
+{
+    const std::regex expr("\"" + key + "\"\\s*:\\s*(-?[0-9]+)");
     std::smatch match;
     if (std::regex_search(content, match, expr) && match.size() > 1)
     {

@@ -1,12 +1,54 @@
 #include "TaskManager.h"
 
 #include <algorithm>
+#include <filesystem>
 
 #include "FileHash.h"
 #include "TimelineFacade.h"
 
 namespace moon::engine
 {
+namespace
+{
+bool trackHasAnyClip(const ProjectState& state, const std::string& trackId)
+{
+    return std::any_of(
+        state.clips.begin(),
+        state.clips.end(),
+        [&trackId](const ClipInfo& clip)
+        {
+            return clip.trackId == trackId;
+        });
+}
+
+std::string ensureGeneratedTrack(ProjectState& state, TimelineFacade& timeline, const std::string& preferredName)
+{
+    auto name = preferredName.empty() ? std::string("Generated Track") : preferredName;
+    int suffix = 2;
+    while (true)
+    {
+        const auto existing = std::find_if(
+            state.tracks.begin(),
+            state.tracks.end(),
+            [&name](const TrackInfo& track)
+            {
+                return track.name == name;
+            });
+        if (existing == state.tracks.end())
+        {
+            return timeline.ensureTrack(state, name);
+        }
+
+        if (!trackHasAnyClip(state, existing->id))
+        {
+            return existing->id;
+        }
+
+        name = preferredName + " " + std::to_string(suffix++);
+    }
+}
+}
+
 TaskManager::TaskManager(JobClientProtocol& client, Logger& logger)
     : client_(client)
     , logger_(logger)
@@ -133,6 +175,26 @@ std::string TaskManager::queueAddLayer(const std::string& sourceClipId,
     return jobId;
 }
 
+std::string TaskManager::queueMusicGeneration(const MusicGenerationRequest& request,
+                                              const std::string& targetTrackId,
+                                              const std::string& preferredTrackName,
+                                              double startSec)
+{
+    const auto jobId = client_.createMusicGenerationJob(request);
+    pendingInsertions_[jobId] = PendingInsertion{
+        jobId,
+        "music-generation",
+        {},
+        std::max(0.0, startSec),
+        std::max(1.0, request.durationSec),
+        request.stylesPrompt,
+        targetTrackId,
+        preferredTrackName,
+        request};
+    upsertTask(TaskInfo{jobId, "music-generation", "queued", 0.0, "Queued music generation"});
+    return jobId;
+}
+
 void TaskManager::poll(ProjectState& state, TimelineFacade& timeline)
 {
     for (auto& [jobId, pending] : pendingInsertions_)
@@ -221,6 +283,42 @@ void TaskManager::poll(ProjectState& state, TimelineFacade& timeline)
                 "ace_step_stub",
                 pending.prompt,
                 FileHash::hashPath(result.outputAudioPath));
+        }
+        else if (pending.jobType == "music-generation")
+        {
+            if (result.outputAudioPath.empty() || !std::filesystem::exists(result.outputAudioPath))
+            {
+                upsertTask(TaskInfo{jobId, "music-generation", "failed", 1.0, "Generated audio file not found"});
+                logger_.error("Music generation output missing for " + jobId);
+                continue;
+            }
+
+            std::string trackId = pending.targetTrackId;
+            const auto trackIt = std::find_if(
+                state.tracks.begin(),
+                state.tracks.end(),
+                [&trackId](const TrackInfo& track)
+                {
+                    return track.id == trackId;
+                });
+            if (trackId.empty() || trackIt == state.tracks.end() || trackHasAnyClip(state, trackId))
+            {
+                trackId = ensureGeneratedTrack(state, timeline, pending.preferredTrackName);
+            }
+
+            const auto clipId = timeline.insertGeneratedClip(
+                state,
+                trackId,
+                result.outputAudioPath,
+                pending.startSec,
+                pending.durationSec > 0.0 ? pending.durationSec : 12.0,
+                {},
+                pending.musicRequest.selectedModel.empty() ? "ace_step" : pending.musicRequest.selectedModel,
+                pending.musicRequest.stylesPrompt + (pending.musicRequest.lyricsPrompt.empty() ? "" : (" | " + pending.musicRequest.lyricsPrompt)),
+                FileHash::hashPath(result.outputAudioPath));
+            timeline.selectTrack(state, trackId);
+            timeline.selectClip(state, clipId);
+            state.uiState.playheadSec = pending.startSec;
         }
 
         logger_.info("Applied completed task result for " + jobId);

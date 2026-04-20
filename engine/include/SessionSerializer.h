@@ -21,6 +21,7 @@ private:
     static std::string extractString(const std::string& content, const std::string& key, const std::string& fallback);
     static double extractDouble(const std::string& content, const std::string& key, double fallback);
     static int extractInt(const std::string& content, const std::string& key, int fallback);
+    static int extractSignedInt(const std::string& content, const std::string& key, int fallback);
     static bool extractBool(const std::string& content, const std::string& key, bool fallback);
     static std::string extractArray(const std::string& content, const std::string& key);
 };

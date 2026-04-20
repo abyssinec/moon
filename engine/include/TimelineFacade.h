@@ -32,6 +32,7 @@ public:
     bool selectClip(ProjectState& state, const std::string& clipId);
     bool selectTrack(ProjectState& state, const std::string& trackId);
     void setSelectedRegion(ProjectState& state, double startSec, double endSec);
+    void setSelectedRegion(ProjectState& state, double startSec, double endSec, int startTrackIndex, int endTrackIndex);
     void clearSelectedRegion(ProjectState& state);
     bool moveClip(ProjectState& state, const std::string& clipId, double newStartSec);
     bool moveClipToTrack(ProjectState& state, const std::string& clipId, const std::string& trackId, double newStartSec);

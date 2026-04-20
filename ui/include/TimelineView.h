@@ -101,6 +101,7 @@ private:
     double xToTime(int x) const;
     bool isRulerHit(const juce::Point<int>& point) const;
     int clipYForIndex(int index) const;
+    int trackIndexForY(int contentY) const;
     juce::Rectangle<int> clipBounds(const moon::engine::ProjectState& state, const moon::engine::ClipInfo& clip) const;
     void paintTimelineBase(juce::Graphics& g);
     void paintWaveformLayer(juce::Graphics& g);
@@ -127,6 +128,7 @@ private:
     WaveformLayerComponent waveformLayer_{*this};
     bool draggingPlayhead_{false};
     bool draggingRegion_{false};
+    bool pendingRegionDrag_{false};
     bool draggingClip_{false};
     bool clipMovedDuringDrag_{false};
     double dragStartSec_{0.0};
@@ -137,6 +139,8 @@ private:
     double waveformDetailScale_{0.55};
     std::string draggedClipId_;
     std::string dropHoverTrackId_;
+    juce::Point<int> dragAnchorPoint_;
+    int dragStartTrackIndex_{-1};
     ClipDragMode clipDragMode_{ClipDragMode::None};
     WaveformTileCache waveformTileCache_;
     WaveformRendererOpenGL waveformRendererOpenGL_;
