@@ -1,4 +1,5 @@
-﻿set(MOON_UI_SOURCES
+set(MOON_UI_SOURCES
+    src/AIGenerationPanel.cpp
     src/TimelineView.cpp
     src/TrackListView.cpp
     src/InspectorPanel.cpp
@@ -18,4 +19,3 @@ else()
     target_compile_definitions(moon_ui PUBLIC MOON_HAS_JUCE=0)
     target_link_libraries(moon_ui PUBLIC moon_engine)
 endif()
-

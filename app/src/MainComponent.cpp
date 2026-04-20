@@ -647,6 +647,7 @@ MainComponent::MainComponent(AppController& controller)
     addAndMakeVisible(fpsValueLabel_);
     addAndMakeVisible(waveformDetailLabel_);
     addAndMakeVisible(waveformDetailSlider_);
+    addAndMakeVisible(aiGenerationPanel_);
     trackListViewport_.setViewedComponent(&trackListView_, false);
     trackListViewport_.setScrollBarsShown(false, false);
     trackListViewport_.onVisibleAreaChanged = [this](const juce::Rectangle<int>&)
@@ -749,6 +750,40 @@ MainComponent::MainComponent(AppController& controller)
         refreshTimelineTuningWidgets();
     };
     refreshTimelineTuningWidgets();
+
+    aiGenerationPanel_.setCreateCallback(
+        [this](const moon::engine::MusicGenerationRequest& request)
+        {
+            const auto stylesPrompt = juce::String(request.stylesPrompt).trim();
+            const auto lyricsPrompt = juce::String(request.lyricsPrompt).trim();
+            if (stylesPrompt.isEmpty() && lyricsPrompt.isEmpty())
+            {
+                return moon::ui::MusicGenerationSubmission{false, {}, "Enter styles or lyrics"};
+            }
+
+            const auto models = controller_.availableMusicGenerationModels();
+            if (models.empty())
+            {
+                return moon::ui::MusicGenerationSubmission{
+                    false,
+                    {},
+                    "Acestep is unavailable. Configure the API URL, executable, or checkpoint first."};
+            }
+
+            if (const auto jobId = controller_.generateMusic(request); jobId.has_value())
+            {
+                taskPanel_.repaint();
+                return moon::ui::MusicGenerationSubmission{true, *jobId, {}};
+            }
+
+            return moon::ui::MusicGenerationSubmission{false, {}, "Music generation could not start"};
+        });
+    aiGenerationPanel_.onHeightChanged = [this]
+    {
+        resized();
+        repaint();
+    };
+    refreshAIGenerationPanel();
 
     menuButton_.onClick = [this] { showMainMenu(); };
     gridModeButton_.onClick = [this] { showGridModeMenu(); };
@@ -860,7 +895,9 @@ void MainComponent::resized()
     }
 
     auto transport = area.removeFromTop(66);
-    auto taskArea = area.removeFromBottom(78);
+    auto bottomArea = area.removeFromBottom(aiGenerationPanel_.preferredHeight() + 82);
+    auto aiPanelArea = bottomArea.removeFromTop(aiGenerationPanel_.preferredHeight());
+    auto taskArea = bottomArea;
     auto inspector = area.removeFromRight(378);
     auto tracks = area.removeFromLeft(198);
 
@@ -886,6 +923,7 @@ void MainComponent::resized()
     timelineRulerBar_.setBounds(ruler);
     timelineOverviewBar_.setBounds(overview);
     timelineViewport_.setBounds(timelinePanel);
+    aiGenerationPanel_.setBounds(aiPanelArea.reduced(4, 2));
 
     refreshScrollableContentSizes();
     syncTrackStripScroll();
@@ -1147,12 +1185,14 @@ void MainComponent::refreshBackendConnection()
     const auto logCount = controller_.logger().lineCount();
     if (controller_.refreshBackendStatus())
     {
+        refreshAIGenerationPanel();
         resized();
         transportBar_.refresh();
         showOperationInfo("Refresh Backend", "Backend connection refreshed successfully.");
         return;
     }
 
+    refreshAIGenerationPanel();
     resized();
     transportBar_.refresh();
     showOperationFailure(
@@ -1443,6 +1483,12 @@ void MainComponent::repaintPlayheadPresentation(double previousPlayheadSec, doub
     lastPresentedPlayheadSec_ = nextPlayheadSec;
 }
 
+void MainComponent::refreshAIGenerationPanel()
+{
+    aiGenerationPanel_.setAvailableModels(controller_.availableMusicGenerationModels());
+    aiGenerationPanel_.refreshTaskState(controller_.tasks());
+}
+
 void MainComponent::timerCallback()
 {
     if (startupNoticeLabel_.isVisible() != !controller_.startupNotice().empty())
@@ -1468,6 +1514,7 @@ void MainComponent::timerCallback()
     {
         taskPollTickCounter_ = 0;
         controller_.pollTasks();
+        refreshAIGenerationPanel();
     }
 
     if (autosaveTickCounter_ >= 600)
@@ -1651,10 +1698,31 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
     {
-        controller_.deleteSelectedClip();
-        timelineView_.repaint();
-        inspectorPanel_.repaint();
-        taskPanel_.repaint();
+        auto& state = controller_.projectManager().state();
+        bool changed = false;
+        if (!state.uiState.selectedClipId.empty())
+        {
+            changed = controller_.deleteSelectedClip();
+        }
+        else if (!state.uiState.selectedTrackId.empty())
+        {
+            changed = controller_.deleteTrack(state.uiState.selectedTrackId);
+            if (changed)
+            {
+                refreshScrollableContentSizes();
+                syncTrackStripScroll();
+                trackListView_.repaint();
+            }
+        }
+
+        if (changed)
+        {
+            timelineView_.repaint();
+            timelineRulerBar_.repaint();
+            timelineOverviewBar_.repaint();
+            inspectorPanel_.repaint();
+            taskPanel_.repaint();
+        }
         return true;
     }
 

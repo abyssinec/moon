@@ -9,6 +9,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "InspectorPanel.h"
+#include "AIGenerationPanel.h"
 #include "TaskPanel.h"
 #include "TimelineView.h"
 #include "TrackListView.h"
@@ -138,6 +139,7 @@ private:
     void refreshTimelineTuningWidgets();
     void refreshFpsCounter(double deltaSec);
     void repaintPlayheadPresentation(double previousPlayheadSec, double nextPlayheadSec, bool forceFull);
+    void refreshAIGenerationPanel();
     void timerCallback() override;
     bool keyPressed(const juce::KeyPress& key) override;
 
@@ -186,6 +188,7 @@ private:
     TimelineRulerBar timelineRulerBar_;
     TimelineOverviewBar timelineOverviewBar_;
     moon::ui::TimelineView timelineView_;
+    moon::ui::AIGenerationPanel aiGenerationPanel_;
     juce::Viewport inspectorViewport_;
     moon::ui::InspectorPanel inspectorPanel_;
     juce::Viewport taskViewport_;

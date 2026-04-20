@@ -95,6 +95,13 @@ void clearSelectedClipState(moon::engine::ProjectState& state)
         clip.selected = false;
     }
 }
+
+std::string trimCopy(std::string value)
+{
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char ch) { return !std::isspace(ch); }).base(), value.end());
+    return value;
+}
 }
 
 AppController::AppController()
@@ -405,6 +412,56 @@ bool AppController::addGeneratedLayer(const std::string& prompt)
     taskManager_->queueAddLayer(clip->id, tempPath.string(), state.uiState.selectedRegionStartSec, duration, prompt);
     markProjectDirty();
     return true;
+}
+
+std::optional<std::string> AppController::generateMusic(const moon::engine::MusicGenerationRequest& request)
+{
+    const auto stylesPrompt = trimCopy(request.stylesPrompt);
+    const auto lyricsPrompt = trimCopy(request.lyricsPrompt);
+    if (stylesPrompt.empty() && lyricsPrompt.empty())
+    {
+        logger_->error("Music generation requested with empty styles and lyrics");
+        return std::nullopt;
+    }
+
+    const auto models = availableMusicGenerationModels();
+    if (models.empty())
+    {
+        logger_->error("Acestep music generation is unavailable");
+        return std::nullopt;
+    }
+
+    auto queuedRequest = request;
+    queuedRequest.stylesPrompt = stylesPrompt;
+    queuedRequest.lyricsPrompt = lyricsPrompt;
+    queuedRequest.isInstrumental = lyricsPrompt.empty();
+    if (queuedRequest.selectedModel.empty())
+    {
+        queuedRequest.selectedModel = models.front();
+    }
+
+    auto& state = projectManager_->state();
+    const auto startSec = std::max(0.0, state.uiState.playheadSec);
+    std::string targetTrackId;
+    if (!state.uiState.selectedTrackId.empty())
+    {
+        const bool selectedTrackHasClip = std::any_of(
+            state.clips.begin(),
+            state.clips.end(),
+            [&state](const moon::engine::ClipInfo& clip)
+            {
+                return clip.trackId == state.uiState.selectedTrackId;
+            });
+        if (!selectedTrackHasClip)
+        {
+            targetTrackId = state.uiState.selectedTrackId;
+        }
+    }
+
+    const auto preferredTrackName = "Generated " + std::string(moon::engine::musicGenerationCategoryLabel(queuedRequest.category));
+    const auto jobId = taskManager_->queueMusicGeneration(queuedRequest, targetTrackId, preferredTrackName, startSec);
+    markProjectDirty();
+    return jobId;
 }
 
 bool AppController::exportFullMix(const std::string& outputPath)
@@ -797,6 +854,7 @@ void AppController::pollTasks()
     auto& state = projectManager_->state();
     const auto clipCountBefore = state.clips.size();
     const auto generatedCountBefore = state.generatedAssets.size();
+    const auto selectedClipBefore = state.uiState.selectedClipId;
 
     taskManager_->poll(state, *timeline_);
 
@@ -805,6 +863,10 @@ void AppController::pollTasks()
         markPreviewPlaybackDirty();
         markProjectDirty();
         saveProject();
+        if (state.uiState.selectedClipId != selectedClipBefore)
+        {
+            syncTransportToSelection();
+        }
     }
 }
 
@@ -1400,6 +1462,11 @@ bool AppController::setProjectTimeSignature(int numerator, int denominator)
     saveProject();
     logger_->info("Updated time signature to " + std::to_string(sanitizedNumerator) + "/" + std::to_string(sanitizedDenominator));
     return true;
+}
+
+std::vector<std::string> AppController::availableMusicGenerationModels() const
+{
+    return backendModels_.musicGeneration;
 }
 
 bool AppController::canCloseSafely() const
