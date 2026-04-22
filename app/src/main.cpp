@@ -3,6 +3,9 @@
 
 #if MOON_HAS_JUCE
 #include <memory>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <juce_events/juce_events.h>
 
 #include "AppConfig.h"
@@ -22,9 +25,34 @@ public:
 
     void initialise(const juce::String&) override
     {
+        if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+        {
+            const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+            std::filesystem::create_directories(path.parent_path());
+            std::ofstream out(path, std::ios::app);
+            if (out) out << "[bootstrap] application initialise begin\n";
+        }
         controller_ = std::make_unique<AppController>();
+        if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+        {
+            const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+            std::ofstream out(path, std::ios::app);
+            if (out) out << "[bootstrap] controller allocated\n";
+        }
         controller_->startup();
+        if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+        {
+            const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+            std::ofstream out(path, std::ios::app);
+            if (out) out << "[bootstrap] controller startup returned\n";
+        }
         window_ = std::make_unique<MainWindow>(*controller_);
+        if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+        {
+            const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+            std::ofstream out(path, std::ios::app);
+            if (out) out << "[bootstrap] main window allocated\n";
+        }
     }
 
     void shutdown() override

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "AIJobClient.h"
+#include "BackendProcessManager.h"
 #include "EngineRuntimeCoordinator.h"
 #include "ExportService.h"
 #include "LocalJobClient.h"
@@ -24,10 +25,22 @@
 
 namespace moon::app
 {
+struct RuntimeInstallDiagnostics
+{
+    bool active{false};
+    bool hasLog{false};
+    double progress{0.0};
+    std::string source;
+    std::string summary;
+    std::string error;
+    std::string logPath;
+};
+
 class AppController
 {
 public:
     AppController();
+    ~AppController();
 
     bool startup();
     bool createProject(const std::string& name, const std::string& rootPath);
@@ -40,6 +53,7 @@ public:
     bool rewriteSelectedRegion(const std::string& prompt);
     bool addGeneratedLayer(const std::string& prompt);
     std::optional<std::string> generateMusic(const moon::engine::MusicGenerationRequest& request);
+    std::string lastMusicGenerationError() const { return lastMusicGenerationError_; }
     bool exportFullMix(const std::string& outputPath);
     bool exportSelectedRegion(const std::string& outputPath);
     bool exportStemTracks(const std::string& outputDirectory);
@@ -69,7 +83,7 @@ public:
     void autosaveIfNeeded();
     moon::engine::Settings currentSettings() const;
     bool saveSettings(const moon::engine::Settings& settings);
-    void pollTasks();
+    bool pollTasks();
     void syncTransportToSelection();
     void seekTimelinePlayhead(double timelineSec);
     void nudgeTimelinePlayhead(double deltaSec);
@@ -103,7 +117,12 @@ public:
     bool downloadModel(const std::string& modelId, std::string& errorMessage);
     bool updateModel(const std::string& modelId, std::string& errorMessage);
     bool cancelAllModelOperations(std::string* errorMessage = nullptr);
+    bool prepareGenerationRuntime(std::string* errorMessage = nullptr, bool autoTriggered = false);
+    bool cancelGenerationRuntimePreparation(std::string* errorMessage = nullptr);
+    bool cancelTask(const std::string& jobId);
     std::filesystem::path modelsRootDirectory() const;
+    RuntimeInstallDiagnostics runtimeInstallDiagnostics() const;
+    bool revealRuntimeInstallLog() const;
     bool hasUnsavedChanges() const noexcept { return projectDirty_; }
     bool hasStalePreview() const noexcept { return previewPlaybackDirty_; }
     std::optional<std::string> projectFilePath() const;
@@ -117,6 +136,9 @@ public:
     moon::engine::Logger& logger() noexcept { return *logger_; }
 
 private:
+    struct RuntimePrepareState;
+    struct PreviewRenderState;
+
     std::unique_ptr<moon::engine::Logger> logger_;
     moon::engine::Settings settings_;
     moon::engine::HealthResponse backendHealth_;
@@ -132,8 +154,11 @@ private:
     std::unique_ptr<moon::engine::WaveformService> waveformService_;
     std::unique_ptr<moon::engine::ExportService> exportService_;
     std::unique_ptr<moon::engine::JobClientProtocol> aiJobClient_;
+    std::unique_ptr<BackendProcessManager> backendProcessManager_;
     std::unique_ptr<moon::engine::ModelManager> modelManager_;
     std::unique_ptr<moon::engine::TaskManager> taskManager_;
+    std::unique_ptr<RuntimePrepareState> runtimePrepareState_;
+    std::unique_ptr<PreviewRenderState> previewRenderState_;
     moon::engine::ModelRegistrySnapshot modelRegistrySnapshot_;
     bool previewPlaybackActive_{false};
     bool previewPlaybackDirty_{true};
@@ -141,9 +166,15 @@ private:
     bool interactiveTimelineEditActive_{false};
     bool interactiveTimelineEditWasPlaying_{false};
     double interactiveTimelineEditPlayheadSec_{0.0};
+    bool runtimePreparePendingAutoStart_{false};
+    double lastBackendStatusRefreshMs_{0.0};
+    bool lastBackendReachableState_{false};
+    std::uint64_t previewRenderGeneration_{0};
     std::filesystem::path previewMixPath_;
     std::string lastPlaybackRouteSummary_;
     std::string lastPlaybackDiagnostic_;
+    std::string lastBackendStatusSummary_;
+    std::string lastMusicGenerationError_;
 
     void markPreviewPlaybackDirty();
     void markProjectDirty();
@@ -160,6 +191,17 @@ private:
     bool shouldUseProjectPreview() const;
     bool shouldUseLiveProjectPlayback() const;
     bool ensureProjectPlaybackRoute();
+    void requestPreviewPlaybackRender();
+    bool pollPreviewPlaybackRender();
     bool preparePreviewPlayback();
+    bool ensureManagedBackendReady(std::string* errorMessage = nullptr, bool forceStart = false);
+    bool pollRuntimePreparation(std::string* errorMessage = nullptr);
+    std::optional<std::string> queueResolvedMusicGeneration(moon::engine::MusicGenerationRequest queuedRequest);
+    bool pollPendingMusicGeneration();
+    void applyRuntimeReadinessOverlay();
+
+    std::optional<moon::engine::MusicGenerationRequest> pendingMusicGenerationRequest_;
+    std::string pendingMusicGenerationTaskId_;
+    std::string pendingMusicGenerationRealJobId_;
 };
 }

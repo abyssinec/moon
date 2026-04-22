@@ -10,7 +10,7 @@ namespace moon::ui
 namespace
 {
 constexpr int kCollapsedHeight = 60;
-constexpr int kExpandedHeight = 230;
+constexpr int kExpandedHeight = 254;
 
 juce::Colour panelFill()                     { return juce::Colour::fromRGB(15, 19, 24); }
 juce::Colour panelOutline()                  { return juce::Colour::fromRGB(40, 46, 54); }
@@ -19,6 +19,7 @@ juce::Colour controlOutline()                { return juce::Colour::fromRGB(54, 
 juce::Colour editorFill()                    { return juce::Colour::fromRGB(17, 21, 27); }
 juce::Colour createFill()                    { return juce::Colour::fromRGB(43, 169, 237); }
 juce::Colour createFillBusy()                { return juce::Colour::fromRGB(78, 110, 136); }
+juce::Colour generationProgressFill()        { return juce::Colour::fromRGB(51, 222, 166); }
 
 void styleSecondaryButton(juce::TextButton& button)
 {
@@ -72,6 +73,50 @@ const moon::engine::InstalledModelInfo* findInstalledModel(const moon::engine::M
         });
     return it == snapshot.installed.end() ? nullptr : &(*it);
 }
+
+bool canSelectForGeneration(const moon::engine::InstalledModelInfo& model)
+{
+    switch (model.status)
+    {
+    case moon::engine::ModelStatus::NotInstalled:
+    case moon::engine::ModelStatus::Downloading:
+    case moon::engine::ModelStatus::Verifying:
+    case moon::engine::ModelStatus::Removing:
+    case moon::engine::ModelStatus::Broken:
+    case moon::engine::ModelStatus::Incompatible:
+        return false;
+    case moon::engine::ModelStatus::Downloaded:
+    case moon::engine::ModelStatus::RuntimeMissing:
+    case moon::engine::ModelStatus::RuntimePreparing:
+    case moon::engine::ModelStatus::Ready:
+    case moon::engine::ModelStatus::Running:
+    case moon::engine::ModelStatus::Failed:
+    case moon::engine::ModelStatus::UpdateAvailable:
+        return true;
+    }
+
+    return false;
+}
+
+const moon::engine::InstalledModelInfo* firstSelectableModelForCapability(
+    const moon::engine::ModelRegistrySnapshot& snapshot,
+    moon::engine::ModelCapability capability)
+{
+    for (const auto& model : snapshot.installed)
+    {
+        if (!canSelectForGeneration(model))
+        {
+            continue;
+        }
+
+        if (std::find(model.capabilities.begin(), model.capabilities.end(), capability) != model.capabilities.end())
+        {
+            return &model;
+        }
+    }
+
+    return nullptr;
+}
 }
 
 AIGenerationPanel::AIGenerationPanel()
@@ -82,7 +127,9 @@ AIGenerationPanel::AIGenerationPanel()
     addAndMakeVisible(targetButton_);
     addAndMakeVisible(deviceButton_);
     addAndMakeVisible(createButton_);
+    addAndMakeVisible(cancelButton_);
     addAndMakeVisible(statusLabel_);
+    addAndMakeVisible(progressBar_);
     addAndMakeVisible(modelCaptionLabel_);
     addAndMakeVisible(stylesLabel_);
     addAndMakeVisible(secondaryLabel_);
@@ -94,6 +141,7 @@ AIGenerationPanel::AIGenerationPanel()
     styleSecondaryButton(manageModelsButton_);
     styleSecondaryButton(targetButton_);
     styleSecondaryButton(deviceButton_);
+    styleSecondaryButton(cancelButton_);
 
     createButton_.setColour(juce::TextButton::buttonColourId, createFill());
     createButton_.setColour(juce::TextButton::buttonOnColourId, createFill());
@@ -112,6 +160,17 @@ AIGenerationPanel::AIGenerationPanel()
     targetButton_.onClick = [this] { showTargetMenu(); };
     deviceButton_.onClick = [this] { showDeviceMenu(); };
     createButton_.onClick = [this] { submitCreate(); };
+    cancelButton_.onClick = [this]
+    {
+        if (!activeJobId_.empty() && cancelCallback_)
+        {
+            if (cancelCallback_(activeJobId_))
+            {
+                statusText_ = "Cancelling generation...";
+                refreshControls();
+            }
+        }
+    };
 
     modelCaptionLabel_.setText("Model", juce::dontSendNotification);
     modelCaptionLabel_.setJustificationType(juce::Justification::centredLeft);
@@ -121,6 +180,9 @@ AIGenerationPanel::AIGenerationPanel()
     statusLabel_.setJustificationType(juce::Justification::centredLeft);
     statusLabel_.setInterceptsMouseClicks(false, false);
     statusLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.68f));
+    progressBar_.setPercentageDisplay(false);
+    progressBar_.setColour(juce::ProgressBar::foregroundColourId, generationProgressFill());
+    progressBar_.setColour(juce::ProgressBar::backgroundColourId, controlFill().darker(0.35f));
 
     stylesLabel_.setText("Style Prompt", juce::dontSendNotification);
     secondaryLabel_.setText("Lyrics", juce::dontSendNotification);
@@ -201,6 +263,8 @@ void AIGenerationPanel::resized()
     header.removeFromRight(8);
     createButton_.setBounds(header.removeFromRight(112));
     header.removeFromRight(8);
+    cancelButton_.setBounds(header.removeFromRight(92));
+    header.removeFromRight(8);
     statusLabel_.setBounds(header);
 
     const bool showExpanded = expanded_;
@@ -211,10 +275,13 @@ void AIGenerationPanel::resized()
 
     if (!showExpanded)
     {
+        progressBar_.setVisible(generating_);
         return;
     }
 
-    area.removeFromTop(10);
+    area.removeFromTop(8);
+    progressBar_.setBounds(area.removeFromTop(8));
+    area.removeFromTop(8);
     auto columns = area;
     auto left = columns.removeFromLeft(columns.getWidth() / 2).reduced(0, 0);
     columns.removeFromLeft(8);
@@ -232,6 +299,11 @@ void AIGenerationPanel::resized()
 void AIGenerationPanel::setCreateCallback(std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> callback)
 {
     createCallback_ = std::move(callback);
+}
+
+void AIGenerationPanel::setCancelCallback(std::function<bool(const std::string&)> callback)
+{
+    cancelCallback_ = std::move(callback);
 }
 
 void AIGenerationPanel::setModelRegistrySnapshot(const moon::engine::ModelRegistrySnapshot& snapshot)
@@ -267,21 +339,33 @@ void AIGenerationPanel::refreshTaskState(const moon::engine::TaskManager& taskMa
     }
 
     const auto& task = it->second;
-    if (task.status == "queued" || task.status == "running")
+    if (task.status == "queued" || task.status == "running" || task.status == "cancelling")
     {
         generating_ = true;
-        statusText_ = juce::String("Generating... ") + juce::String(static_cast<int>(std::round(task.progress * 100.0))) + "%";
+        generationProgress_ = std::clamp(task.progress, 0.0, 1.0);
+        statusText_ = task.message.empty()
+            ? (juce::String("Generating... ") + juce::String(static_cast<int>(std::round(task.progress * 100.0))) + "%")
+            : juce::String(task.message);
     }
     else if (task.status == "completed")
     {
         generating_ = false;
         activeJobId_.clear();
+        generationProgress_ = 1.0;
         statusText_ = "Generated clip added to timeline";
+    }
+    else if (task.status == "cancelled")
+    {
+        generating_ = false;
+        activeJobId_.clear();
+        generationProgress_ = 0.0;
+        statusText_ = "Generation cancelled";
     }
     else if (task.status == "failed")
     {
         generating_ = false;
         activeJobId_.clear();
+        generationProgress_ = 0.0;
         statusText_ = task.message.empty() ? juce::String("Generation failed") : juce::String(task.message);
     }
 
@@ -375,7 +459,7 @@ void AIGenerationPanel::showModelMenu()
     int itemId = 1;
     for (const auto& model : modelRegistrySnapshot_.installed)
     {
-        if (model.status != moon::engine::ModelStatus::Ready && model.status != moon::engine::ModelStatus::UpdateAvailable)
+        if (!canSelectForGeneration(model))
         {
             continue;
         }
@@ -390,12 +474,16 @@ void AIGenerationPanel::showModelMenu()
         {
             label << "  v" << model.version;
         }
+        if (model.status != moon::engine::ModelStatus::Ready && model.status != moon::engine::ModelStatus::UpdateAvailable)
+        {
+            label << "  (" << std::string(moon::engine::modelStatusLabel(model.status)) << ")";
+        }
         menu.addItem(itemId++, label, true, model.id == activeModel);
     }
 
     if (itemId == 1)
     {
-        menu.addItem(1, "No ready models for this target", false, false);
+        menu.addItem(1, "No installed models for this target", false, false);
     }
 
     menu.showMenuAsync(
@@ -410,7 +498,7 @@ void AIGenerationPanel::showModelMenu()
             std::vector<std::string> candidateIds;
             for (const auto& model : modelRegistrySnapshot_.installed)
             {
-                if ((model.status == moon::engine::ModelStatus::Ready || model.status == moon::engine::ModelStatus::UpdateAvailable)
+                if (canSelectForGeneration(model)
                     && std::find(model.capabilities.begin(), model.capabilities.end(), capability) != model.capabilities.end())
                 {
                     candidateIds.push_back(model.id);
@@ -445,13 +533,6 @@ void AIGenerationPanel::submitCreate()
         return;
     }
 
-    if (activeModelId().empty())
-    {
-        statusText_ = "Select a ready model first";
-        refreshControls();
-        return;
-    }
-
     if (!createCallback_)
     {
         statusText_ = "Generation callback is not configured";
@@ -469,6 +550,7 @@ void AIGenerationPanel::submitCreate()
 
     activeJobId_ = submission.jobId;
     generating_ = true;
+    generationProgress_ = 0.0;
     statusText_ = "Generating...";
     refreshControls();
 }
@@ -483,10 +565,12 @@ void AIGenerationPanel::refreshControls()
     createButton_.setButtonText(generating_ ? "Generating..." : "Create");
     createButton_.setColour(juce::TextButton::buttonColourId, generating_ ? createFillBusy() : createFill());
     manageModelsButton_.setButtonText(expanded_ ? "Model Manager" : "Models...");
+    cancelButton_.setVisible(generating_);
+    progressBar_.setVisible(expanded_ && generating_);
 
-    const bool hasReadyModel = !activeModelId().empty();
-    const bool canCreate = !generating_ && hasReadyModel && !requestLooksEmpty();
+    const bool canCreate = !generating_ && !requestLooksEmpty();
     createButton_.setEnabled(canCreate);
+    cancelButton_.setEnabled(generating_ && !activeJobId_.empty());
     modelButton_.setEnabled(!generating_);
     manageModelsButton_.setEnabled(!generating_);
     targetButton_.setEnabled(!generating_);
@@ -574,11 +658,24 @@ std::string AIGenerationPanel::activeModelId() const
 {
     const auto capability = currentCapability();
     const auto it = modelRegistrySnapshot_.activeBindings.find(capability);
-    if (it == modelRegistrySnapshot_.activeBindings.end())
+    if (it != modelRegistrySnapshot_.activeBindings.end())
     {
-        return {};
+        if (const auto* model = findInstalledModel(modelRegistrySnapshot_, it->second))
+        {
+            if (canSelectForGeneration(*model)
+                && std::find(model->capabilities.begin(), model->capabilities.end(), capability) != model->capabilities.end())
+            {
+                return it->second;
+            }
+        }
     }
-    return it->second;
+
+    if (const auto* fallbackModel = firstSelectableModelForCapability(modelRegistrySnapshot_, capability))
+    {
+        return fallbackModel->id;
+    }
+
+    return {};
 }
 
 std::string AIGenerationPanel::activeModelVersion() const
@@ -588,6 +685,16 @@ std::string AIGenerationPanel::activeModelVersion() const
         return model->version;
     }
     return {};
+}
+
+bool AIGenerationPanel::activeModelReady() const
+{
+    if (const auto* model = findInstalledModel(modelRegistrySnapshot_, activeModelId()))
+    {
+        return model->status == moon::engine::ModelStatus::Ready
+            || model->status == moon::engine::ModelStatus::UpdateAvailable;
+    }
+    return false;
 }
 
 std::string AIGenerationPanel::activeModelPath() const

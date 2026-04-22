@@ -4,6 +4,7 @@
 
 #if MOON_HAS_JUCE
 #include <memory>
+#include <future>
 #include <utility>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -115,6 +116,7 @@ public:
     void filesDropped(const juce::StringArray& files, int x, int y) override;
 
 private:
+    void initializeAudioDeviceAsync();
     void createNewProject();
     void openExistingProject();
     void saveCurrentProject();
@@ -141,6 +143,8 @@ private:
     void refreshFpsCounter(double deltaSec);
     void repaintPlayheadPresentation(double previousPlayheadSec, double nextPlayheadSec, bool forceFull);
     void refreshAIGenerationPanel();
+    void refreshAIGenerationPanelModelState();
+    void refreshAIGenerationPanelTaskState();
     void openModelManagerForCapability(moon::engine::ModelCapability capability);
     void timerCallback() override;
     bool keyPressed(const juce::KeyPress& key) override;
@@ -148,6 +152,9 @@ private:
     AppController& controller_;
     juce::AudioDeviceManager audioDeviceManager_;
     std::unique_ptr<juce::AudioSourcePlayer> audioSourcePlayer_;
+    bool audioDeviceInitialized_{false};
+    bool audioDeviceInitInProgress_{false};
+    std::future<void> audioDeviceInitFuture_;
     juce::TextButton menuButton_{"Menu"};
     juce::Label tracksHeaderLabel_;
     juce::TextButton addTrackButton_{"+ Add Track"};
@@ -174,6 +181,8 @@ private:
     juce::TextButton dismissStartupNoticeButton_{"Dismiss"};
     int autosaveTickCounter_{0};
     int taskPollTickCounter_{0};
+    int modelPollTickCounter_{0};
+    int transportRefreshTickCounter_{0};
     double lastTransportTickMs_{0.0};
     double fpsSmoothed_{60.0};
     double lastTimelinePixelsPerSecond_{100.0};
@@ -181,6 +190,8 @@ private:
     bool syncingTrackScroll_{false};
     int lastTimelineScrollY_{0};
     int lastTrackScrollY_{0};
+    int lastKnownTrackCount_{-1};
+    int lastTaskPanelContentWidth_{0};
     int lastTimelineContentWidth_{0};
     int lastTimelineViewportWidth_{0};
     moon::ui::TransportBar transportBar_;

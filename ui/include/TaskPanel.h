@@ -18,7 +18,6 @@ public:
 
 private:
     moon::engine::TaskManager& taskManager_;
-    moon::engine::Logger& logger_;
 };
 }
 #else

@@ -18,9 +18,15 @@ enum class ModelStatus
 {
     NotInstalled,
     Downloading,
+    Downloaded,
     Verifying,
+    RuntimeMissing,
+    RuntimePreparing,
     Ready,
+    Running,
     Broken,
+    Incompatible,
+    Failed,
     UpdateAvailable,
     Removing
 };
@@ -31,9 +37,15 @@ inline constexpr std::string_view modelStatusLabel(ModelStatus status) noexcept
     {
     case ModelStatus::NotInstalled:   return "Not Installed";
     case ModelStatus::Downloading:    return "Downloading";
+    case ModelStatus::Downloaded:     return "Downloaded";
     case ModelStatus::Verifying:      return "Verifying";
+    case ModelStatus::RuntimeMissing: return "Runtime Missing";
+    case ModelStatus::RuntimePreparing:return "Preparing Runtime";
     case ModelStatus::Ready:          return "Ready";
+    case ModelStatus::Running:        return "Running";
     case ModelStatus::Broken:         return "Broken";
+    case ModelStatus::Incompatible:   return "Incompatible";
+    case ModelStatus::Failed:         return "Failed";
     case ModelStatus::UpdateAvailable:return "Update Available";
     case ModelStatus::Removing:       return "Removing";
     }

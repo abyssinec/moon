@@ -1,10 +1,13 @@
+from pathlib import Path
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.cache_manager import all_outputs_exist, compute_cache_key, output_path
 from app.config import settings
 from app.job_store import job_store
-from app.schemas import AddLayerJobRequest, RewriteJobRequest, StemsJobRequest
+from app.schemas import AddLayerJobRequest, MusicGenerationJobRequest, RewriteJobRequest, StemsJobRequest
 from app.services.add_layer_service import AddLayerService
+from app.services.music_generation_service import MusicGenerationService
 from app.services.rewrite_service import RewriteService
 from app.services.stems_service import StemsService
 
@@ -13,6 +16,7 @@ router = APIRouter(prefix="/jobs")
 stems_service = StemsService()
 rewrite_service = RewriteService()
 add_layer_service = AddLayerService()
+music_generation_service = MusicGenerationService()
 
 
 def _run_stems_job(job_id: str, request: StemsJobRequest) -> None:
@@ -158,6 +162,93 @@ def _run_single_output_job(job_id: str, job_type: str, input_path: str, prompt: 
         )
 
 
+def _run_music_generation_job(job_id: str, request: MusicGenerationJobRequest) -> None:
+    try:
+        key = compute_cache_key(
+            request.prompt,
+            request.checkpoint_path,
+            request.lyrics,
+            request.model,
+            request.model_dump(),
+        )
+        resolved_output = request.output_path.strip() or str(output_path(settings.cache_dir, key, "music-generation"))
+        runtime_details = music_generation_service.runtime_summary()
+
+        if Path(resolved_output).exists():
+            job_store.update_job(
+                job_id,
+                status="completed",
+                progress=1.0,
+                message="cache hit",
+                details={"cache_hit": True, "stage": "completed", "runner": runtime_details},
+                result={
+                    "output_audio_path": str(resolved_output),
+                    "details": {"cache_hit": True, "stage": "completed", "runner": runtime_details},
+                },
+            )
+            return
+
+        def emit(stage: str, progress: float, message: str) -> None:
+            job_store.update_job(
+                job_id,
+                status="running",
+                progress=progress,
+                message=message,
+                details={"cache_hit": False, "stage": stage, "runner": music_generation_service.runtime_summary()},
+            )
+
+        def cancelled() -> bool:
+            return job_store.cancel_requested(job_id)
+
+        emit("preparing", 0.05, "Preparing runtime")
+        params = request.model_dump()
+        params["checkpoint_path"] = request.checkpoint_path
+        params["duration_sec"] = request.duration_sec
+        params["device"] = request.device
+        params["lyrics"] = request.lyrics
+        params["notes"] = request.notes
+
+        generated_path = music_generation_service.generate_music(
+            request.prompt,
+            params,
+            resolved_output,
+            progress_callback=emit,
+            cancel_check=cancelled,
+        )
+
+        if cancelled():
+            job_store.update_job(
+                job_id,
+                status="cancelled",
+                progress=1.0,
+                message="Generation cancelled",
+                details={"cache_hit": False, "stage": "cancelled", "runner": music_generation_service.runtime_summary()},
+            )
+            return
+
+        emit("importing_result", 0.96, "Preparing generated audio")
+        job_store.update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message="completed",
+            details={"cache_hit": False, "stage": "completed", "runner": music_generation_service.runtime_summary()},
+            result={
+                "output_audio_path": str(generated_path),
+                "details": {"cache_hit": False, "stage": "completed", "runner": music_generation_service.runtime_summary()},
+            },
+        )
+    except Exception as exc:
+        status = "cancelled" if str(exc).strip().lower() == "cancelled" else "failed"
+        job_store.update_job(
+            job_id,
+            status=status,
+            progress=1.0,
+            message="Generation cancelled" if status == "cancelled" else str(exc),
+            details={"cache_hit": False, "stage": status, "runner": music_generation_service.runtime_summary()},
+        )
+
+
 @router.post("/stems")
 def create_stems_job(request: StemsJobRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
     job = job_store.create_job("stems")
@@ -195,6 +286,13 @@ def create_add_layer_job(request: AddLayerJobRequest, background_tasks: Backgrou
     return {"id": job.id, "status": job.status}
 
 
+@router.post("/music-generation")
+def create_music_generation_job(request: MusicGenerationJobRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
+    job = job_store.create_job("music-generation")
+    background_tasks.add_task(_run_music_generation_job, job.id, request)
+    return {"id": job.id, "status": job.status}
+
+
 @router.get("/{job_id}")
 def get_job(job_id: str) -> dict:
     job = job_store.get_job(job_id)
@@ -218,3 +316,14 @@ def get_job_result(job_id: str) -> dict:
     if job.status != "completed" or job.result is None:
         raise HTTPException(status_code=409, detail="job not completed")
     return {"id": job.id, "status": job.status, **job.result}
+
+
+@router.post("/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, str]:
+    job = job_store.request_cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status in {"completed", "failed", "cancelled"}:
+        return {"id": job.id, "status": job.status}
+    job_store.update_job(job_id, status="cancelling", message="Cancelling...", details={**job.details, "stage": "cancelling"})
+    return {"id": job.id, "status": "cancelling"}

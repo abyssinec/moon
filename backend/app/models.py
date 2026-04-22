@@ -11,3 +11,4 @@ class JobRecord:
     message: str = "queued"
     details: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] | None = field(default=None)
+    cancel_requested: bool = False

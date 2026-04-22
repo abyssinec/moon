@@ -1,8 +1,29 @@
-﻿#include "MainWindow.h"
+#include "MainWindow.h"
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #if MOON_HAS_JUCE
 namespace moon::app
 {
+namespace
+{
+void appendMainWindowTrace(const std::string& line)
+{
+    if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+    {
+        const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::app);
+        if (out)
+        {
+            out << line << "\n";
+        }
+    }
+}
+}
+
 MainWindow::MainWindow(AppController& controller)
     : juce::DocumentWindow(controller.windowTitle(),
                            juce::Colours::darkslategrey,
@@ -10,8 +31,10 @@ MainWindow::MainWindow(AppController& controller)
     , controller_(controller)
     , mainComponent_(std::make_unique<MainComponent>(controller))
 {
+    appendMainWindowTrace("[bootstrap] MainWindow ctor begin");
     setUsingNativeTitleBar(true);
     setResizable(true, true);
+    appendMainWindowTrace("[bootstrap] MainWindow before setContentOwned");
     setContentOwned(mainComponent_.release(), true);
     if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
     {
@@ -21,17 +44,11 @@ MainWindow::MainWindow(AppController& controller)
     {
         centreWithSize(1400, 900);
     }
+    appendMainWindowTrace("[bootstrap] MainWindow before setVisible");
     setVisible(true);
-    setFullScreen(true);
+    toFront(true);
     startTimerHz(4);
-
-    if (!controller_.startupNotice().empty())
-    {
-        juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::InfoIcon,
-            "Startup Notice",
-            controller_.startupNotice());
-    }
+    appendMainWindowTrace("[bootstrap] MainWindow ctor end");
 }
 
 void MainWindow::closeButtonPressed()
@@ -42,6 +59,14 @@ void MainWindow::closeButtonPressed()
 
 void MainWindow::timerCallback()
 {
+    if (!fullscreenApplied_)
+    {
+        fullscreenApplied_ = true;
+        appendMainWindowTrace("[bootstrap] MainWindow applying deferred fullscreen");
+        setFullScreen(true);
+        toFront(true);
+    }
+
     const auto desiredTitle = controller_.windowTitle();
     if (getName().toStdString() != desiredTitle)
     {
@@ -50,6 +75,3 @@ void MainWindow::timerCallback()
 }
 }
 #endif
-
-
-

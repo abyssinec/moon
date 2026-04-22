@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.services.add_layer_service import AddLayerService
+from app.services.music_generation_service import MusicGenerationService
 from app.services.rewrite_service import RewriteService
 from app.services.stems_service import StemsService
 
@@ -9,6 +10,7 @@ router = APIRouter()
 stems_service = StemsService()
 rewrite_service = RewriteService()
 add_layer_service = AddLayerService()
+music_generation_service = MusicGenerationService()
 
 
 @router.get("/models")
@@ -17,9 +19,11 @@ def models() -> dict:
         "stems": stems_service.available_models(),
         "rewrite": rewrite_service.available_models(),
         "add_layer": add_layer_service.available_models(),
+        "music_generation": music_generation_service.available_models(),
         "details": {
             "stems": stems_service.runtime_summary(),
             "rewrite": rewrite_service.runtime_summary(),
             "add_layer": add_layer_service.runtime_summary(),
+            "music_generation": music_generation_service.runtime_summary(),
         },
     }

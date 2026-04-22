@@ -1,0 +1,12 @@
+{
+  "id": "ace-step",
+  "display_name": "ACE-Step",
+  "version": "1.5",
+  "source": "catalog",
+  "provider": "ACE-Step",
+  "description": "Primary ACE-Step model family for song and track generation.",
+  "download_uri": "",
+  "approximate_size_mb": 0,
+  "supports_existing_folder": true,
+  "capabilities": ["song_generation", "track_generation"]
+}

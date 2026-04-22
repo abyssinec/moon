@@ -28,5 +28,18 @@ class JobStore:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def request_cancel(self, job_id: str) -> JobRecord | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            job.cancel_requested = True
+            return job
+
+    def cancel_requested(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return bool(job and job.cancel_requested)
+
 
 job_store = JobStore()

@@ -116,6 +116,18 @@ std::string buildMusicPrompt(const MusicGenerationRequest& request)
     return prompt;
 }
 
+std::string devicePreferenceValue(ComputeDevicePreference preference)
+{
+    switch (preference)
+    {
+    case ComputeDevicePreference::GPU:  return "gpu";
+    case ComputeDevicePreference::CPU:  return "cpu";
+    case ComputeDevicePreference::Auto: return "auto";
+    }
+
+    return "auto";
+}
+
 struct BackendEndpoint
 {
     std::wstring host{L"127.0.0.1"};
@@ -202,7 +214,6 @@ HealthResponse AIJobClient::healthCheck() const
     }
 
     markBackendFallback();
-    logger_.info("Stub health check against " + backendUrl_);
     return HealthResponse{"ok", "local-ai-audio-service"};
 }
 
@@ -236,7 +247,6 @@ ModelsResponse AIJobClient::models() const
     }
 
     markBackendFallback();
-    logger_.info("Stub model listing against " + backendUrl_);
     return ModelsResponse{{"demucs"}, {"ace_step_stub"}, {"ace_step_stub"}, {"ace_step_stub"}};
 }
 
@@ -311,6 +321,31 @@ std::string AIJobClient::createAddLayerJob(const std::string& inputAudioPath,
 std::string AIJobClient::createMusicGenerationJob(const MusicGenerationRequest& request)
 {
     const auto prompt = buildMusicPrompt(request);
+    std::ostringstream body;
+    body << "{"
+         << "\"model\":\"" << jsonEscape(request.selectedModel.empty() ? "ace_step" : request.selectedModel) << "\","
+         << "\"checkpoint_path\":\"" << jsonEscape(request.selectedModelPath) << "\","
+         << "\"output_path\":\"\","
+         << "\"prompt\":\"" << jsonEscape(prompt) << "\","
+         << "\"lyrics\":\"" << jsonEscape(request.lyricsPrompt) << "\","
+         << "\"notes\":\"" << jsonEscape(request.secondaryPromptIsLyrics ? std::string{} : request.secondaryPrompt) << "\","
+         << "\"category\":\"" << jsonEscape(std::string(musicGenerationCategoryLabel(request.category))) << "\","
+         << "\"duration_sec\":" << std::max(1.0, request.durationSec) << ","
+         << "\"seed\":" << request.seed << ","
+         << "\"device\":\"" << jsonEscape(devicePreferenceValue(request.devicePreference)) << "\","
+         << "\"bpm\":" << request.bpm << ","
+         << "\"musical_key\":\"" << jsonEscape(request.musicalKey) << "\""
+         << "}";
+    if (const auto response = httpPost("/jobs/music-generation", body.str()); response.has_value())
+    {
+        markBackendReachable();
+        if (const auto id = extractJsonString(*response, "id"); id.has_value())
+        {
+            logger_.info("Created backend music generation job " + *id);
+            return *id;
+        }
+    }
+
     markBackendFallback();
     return createJob("music-generation", "", request.selectedModel.empty() ? "ace_step_stub" : request.selectedModel, prompt, request.durationSec);
 }
@@ -374,6 +409,33 @@ JobResultResponse AIJobClient::getJobResult(const std::string& jobId) const
     }
     markBackendFallback();
     return it->second.result;
+}
+
+bool AIJobClient::cancelJob(const std::string& jobId)
+{
+    if (const auto response = httpPost("/jobs/" + jobId + "/cancel", "{}"); response.has_value())
+    {
+        markBackendReachable();
+        return true;
+    }
+
+    auto it = jobs_.find(jobId);
+    if (it == jobs_.end())
+    {
+        return false;
+    }
+
+    markBackendFallback();
+    it->second.status.status = "cancelled";
+    it->second.status.progress = 1.0;
+    it->second.status.message = "cancelled";
+    it->second.result.status = "cancelled";
+    return true;
+}
+
+void AIJobClient::setBackendReachableHint(bool reachable) const noexcept
+{
+    backendReachable_ = reachable;
 }
 
 std::optional<std::string> AIJobClient::httpGet(const std::string& path) const

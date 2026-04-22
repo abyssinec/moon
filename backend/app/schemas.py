@@ -10,6 +10,7 @@ class ModelsResponse(BaseModel):
     stems: list[str]
     rewrite: list[str]
     add_layer: list[str] = Field(alias="add_layer")
+    music_generation: list[str] = Field(default_factory=list, alias="music_generation")
 
 
 class StemsJobRequest(BaseModel):
@@ -35,3 +36,18 @@ class AddLayerJobRequest(BaseModel):
     model: str = "ace_step_stub"
     seed: int = 0
     duration_sec: float = 0.0
+
+
+class MusicGenerationJobRequest(BaseModel):
+    model: str = "ace_step_stub"
+    checkpoint_path: str = ""
+    output_path: str = ""
+    prompt: str
+    lyrics: str = ""
+    notes: str = ""
+    category: str = "Song"
+    duration_sec: float = 12.0
+    seed: int = 0
+    device: str = "auto"
+    bpm: float = 0.0
+    musical_key: str = ""

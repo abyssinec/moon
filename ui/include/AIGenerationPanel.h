@@ -29,6 +29,7 @@ public:
     void resized() override;
 
     void setCreateCallback(std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> callback);
+    void setCancelCallback(std::function<bool(const std::string&)> callback);
     void setModelRegistrySnapshot(const moon::engine::ModelRegistrySnapshot& snapshot);
     void setModelSelectionCallback(std::function<bool(moon::engine::ModelCapability, const std::string&, std::string&)> callback);
     void setOpenModelManagerCallback(std::function<void(moon::engine::ModelCapability)> callback);
@@ -56,12 +57,14 @@ private:
     juce::String activeModelLabel() const;
     juce::String activeModelStatusLabel() const;
     std::string activeModelId() const;
+    bool activeModelReady() const;
     std::string activeModelVersion() const;
     std::string activeModelPath() const;
     moon::engine::ModelCapability currentCapability() const noexcept;
     moon::engine::GenerationTargetProfile currentTargetProfile() const noexcept;
 
     std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> createCallback_;
+    std::function<bool(const std::string&)> cancelCallback_;
     std::function<bool(moon::engine::ModelCapability, const std::string&, std::string&)> modelSelectionCallback_;
     std::function<void(moon::engine::ModelCapability)> openModelManagerCallback_;
     moon::engine::ModelRegistrySnapshot modelRegistrySnapshot_;
@@ -71,6 +74,7 @@ private:
     bool expanded_{false};
     bool generating_{false};
     std::string activeJobId_;
+    double generationProgress_{0.0};
     juce::String statusText_{"Generation ready"};
 
     juce::TextButton expandButton_{">"};
@@ -79,7 +83,9 @@ private:
     juce::TextButton targetButton_{"Song"};
     juce::TextButton deviceButton_{"Auto"};
     juce::TextButton createButton_{"Create"};
+    juce::TextButton cancelButton_{"Cancel"};
     juce::Label statusLabel_;
+    juce::ProgressBar progressBar_{generationProgress_};
     juce::Label modelCaptionLabel_;
     juce::Label stylesLabel_;
     juce::Label secondaryLabel_;

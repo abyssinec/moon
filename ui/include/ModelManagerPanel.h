@@ -68,6 +68,9 @@ private:
     juce::String detailTitleForRow(int row) const;
     juce::String detailBodyForRow(int row) const;
     std::string selectedModelId() const;
+    std::filesystem::path selectedLocalFolderPath() const;
+    bool selectedLocalFolderValid() const;
+    std::string inferredModelIdForLocalFolder(const moon::engine::LocalModelFolderInfo& folder) const;
     std::vector<int> filteredRowIndexes() const;
     void restoreSelection(const std::string& preferredModelId);
     void runAction(const std::function<bool(std::string&)>& action, const juce::String& successText);

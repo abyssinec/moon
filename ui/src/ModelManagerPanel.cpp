@@ -3,6 +3,7 @@
 #if MOON_HAS_JUCE
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace moon::ui
@@ -15,14 +16,13 @@ juce::Colour controlFill()    { return juce::Colour::fromRGB(31, 36, 43); }
 juce::Colour selectionFill()  { return juce::Colour::fromRGB(47, 89, 136); }
 juce::Colour accentFill()     { return juce::Colour::fromRGB(43, 169, 237); }
 
-juce::String capabilityList(const std::vector<moon::engine::ModelCapability>& capabilities)
+std::string lowercaseCopy(std::string value)
 {
-    juce::StringArray values;
-    for (const auto capability : capabilities)
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch)
     {
-        values.add(juce::String(std::string(moon::engine::modelCapabilityLabel(capability))));
-    }
-    return values.isEmpty() ? juce::String("none") : values.joinIntoString(", ");
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
 }
 
 void styleButton(juce::TextButton& button, bool accent = false)
@@ -148,7 +148,7 @@ ModelManagerPanel::ModelManagerPanel()
             {
                 return downloadCallback_ ? downloadCallback_(modelId, errorMessage) : false;
             },
-            "Model download started");
+            "Model download started; runtime will prepare automatically");
     };
     updateButton_.onClick = [this]
     {
@@ -163,7 +163,7 @@ ModelManagerPanel::ModelManagerPanel()
             {
                 return updateCallback_ ? updateCallback_(modelId, errorMessage) : false;
             },
-            "Model update started");
+            "Model update started; runtime will prepare automatically");
     };
     verifyButton_.onClick = [this]
     {
@@ -195,7 +195,57 @@ ModelManagerPanel::ModelManagerPanel()
             },
             "Model removed");
     };
-    addExistingButton_.onClick = [this] { promptAddExistingFolder(); };
+    addExistingButton_.onClick = [this]
+    {
+        if (activeSection_ != Section::Local)
+        {
+            promptAddExistingFolder();
+            return;
+        }
+
+        const auto row = listBox_.getSelectedRow();
+        const auto indexes = filteredRowIndexes();
+        if (row < 0 || row >= static_cast<int>(indexes.size()))
+        {
+            statusLabel_.setText("Select a local model folder first", juce::dontSendNotification);
+            return;
+        }
+
+        const auto& folder = snapshot_.localFolders[static_cast<std::size_t>(indexes[static_cast<std::size_t>(row)])];
+        if (!folder.valid)
+        {
+            statusLabel_.setText("This local folder is not a valid model yet", juce::dontSendNotification);
+            return;
+        }
+
+        const auto modelId = inferredModelIdForLocalFolder(folder);
+        if (modelId.empty())
+        {
+            statusLabel_.setText("No compatible catalog model found for this local folder", juce::dontSendNotification);
+            return;
+        }
+
+        runAction(
+            [this, modelId, folder](std::string& errorMessage)
+            {
+                if (!addExistingCallback_ || !addExistingCallback_(modelId, folder.path.string(), errorMessage))
+                {
+                    return false;
+                }
+
+                if (setActiveCallback_)
+                {
+                    std::string activationError;
+                    if (!setActiveCallback_(preferredCapability_, modelId, activationError) && errorMessage.empty())
+                    {
+                        errorMessage = activationError;
+                    }
+                }
+                return true;
+            },
+            "Local model installed and activated");
+    };
+    addExistingButton_.setButtonText("Add Existing...");
     openFolderButton_.onClick = [this]
     {
         if (openModelsFolderCallback_)
@@ -235,15 +285,23 @@ void ModelManagerPanel::resized()
 
     area.removeFromTop(8);
     auto tabs = area.removeFromTop(28);
-    auto filterArea = tabs.removeFromRight(304);
+    auto filterArea = activeSection_ == Section::Local ? juce::Rectangle<int>{} : tabs.removeFromRight(activeSection_ == Section::Available ? 304 : 156);
     installedTab_.setBounds(tabs.removeFromLeft(94));
     tabs.removeFromLeft(6);
     availableTab_.setBounds(tabs.removeFromLeft(94));
     tabs.removeFromLeft(6);
     localTab_.setBounds(tabs.removeFromLeft(74));
-    capabilityFilterBox_.setBounds(filterArea.removeFromLeft(156));
-    filterArea.removeFromLeft(8);
-    sourceFilterBox_.setBounds(filterArea.removeFromLeft(140));
+    if (activeSection_ != Section::Local)
+    {
+        capabilityFilterBox_.setBounds(filterArea.removeFromLeft(156));
+        filterArea.removeFromLeft(8);
+        sourceFilterBox_.setBounds(activeSection_ == Section::Available ? filterArea.removeFromLeft(140) : juce::Rectangle<int>{});
+    }
+    else
+    {
+        capabilityFilterBox_.setBounds({});
+        sourceFilterBox_.setBounds({});
+    }
     area.removeFromTop(8);
     auto footer = area.removeFromBottom(34);
     auto left = area.removeFromLeft(320);
@@ -458,6 +516,9 @@ void ModelManagerPanel::refreshDetails()
     const bool hasModel = !modelId.empty();
     const bool installedSection = activeSection_ == Section::Installed;
     const bool availableSection = activeSection_ == Section::Available;
+    const bool localSection = activeSection_ == Section::Local;
+    const bool hasLocalFolder = !selectedLocalFolderPath().empty();
+    const bool localFolderValid = selectedLocalFolderValid();
     bool selectedAvailableModelCanDownload = false;
 
     if (availableSection && hasModel)
@@ -472,24 +533,26 @@ void ModelManagerPanel::refreshDetails()
         }
     }
 
-    refreshButton_.setVisible(activeSection_ != Section::Available);
+    refreshButton_.setVisible(true);
     syncRemoteButton_.setVisible(activeSection_ == Section::Available);
     setActiveButton_.setVisible(installedSection);
     downloadButton_.setVisible(availableSection);
-    updateButton_.setVisible(installedSection);
+    updateButton_.setVisible(false);
     verifyButton_.setVisible(installedSection);
     removeButton_.setVisible(installedSection);
-    addExistingButton_.setVisible(activeSection_ != Section::Installed);
+    addExistingButton_.setVisible(!installedSection);
     openFolderButton_.setVisible(true);
 
+    addExistingButton_.setButtonText(localSection ? "Use Local Model" : "Add Existing...");
     syncRemoteButton_.setEnabled(true);
     setActiveButton_.setEnabled(hasModel && installedSection);
     downloadButton_.setEnabled(hasModel && availableSection && selectedAvailableModelCanDownload);
     updateButton_.setEnabled(hasModel && installedSection);
     verifyButton_.setEnabled(hasModel && installedSection);
     removeButton_.setEnabled(hasModel && installedSection);
-    addExistingButton_.setEnabled(activeSection_ != Section::Local ? hasModel : true);
+    addExistingButton_.setEnabled(localSection ? (hasLocalFolder && localFolderValid) : hasModel);
     capabilityFilterBox_.setEnabled(activeSection_ != Section::Local);
+    capabilityFilterBox_.setVisible(activeSection_ != Section::Local);
     sourceFilterBox_.setEnabled(activeSection_ == Section::Available);
     sourceFilterBox_.setVisible(activeSection_ == Section::Available);
     resized();
@@ -606,7 +669,22 @@ juce::String ModelManagerPanel::detailBodyForRow(int row) const
     const auto indexes = filteredRowIndexes();
     if (row < 0 || row >= static_cast<int>(indexes.size()))
     {
-        return "Select an installed model, catalog entry, or local folder to inspect details and actions.";
+        if (activeSection_ == Section::Local)
+        {
+            return "Local models are folders inside the models/install area.\n\n"
+                   "If a folder appears here, select it and press Use Local Model. "
+                   "Moon will register it as installed and activate it for generation.\n\n"
+                   "If the list is empty, press Open Models Folder and put the model folder into installs/ or use Add Existing from Available.";
+        }
+
+        if (activeSection_ == Section::Installed)
+        {
+            return "No installed model is selected.\n\n"
+                   "Open Local to use an already downloaded folder, or Available to download/add a model.";
+        }
+
+        return "No catalog model is selected.\n\n"
+               "Choose a model to download, or use Add Existing if you already have the files locally.";
     }
     const auto sourceRow = indexes[static_cast<std::size_t>(row)];
 
@@ -623,7 +701,6 @@ juce::String ModelManagerPanel::detailBodyForRow(int row) const
         }
         lines.add("Path: " + item.installPath.string());
         lines.add("Source: " + juce::String(item.source));
-        lines.add("Capabilities: " + capabilityList(item.capabilities));
         lines.add("Active Binding: " + juce::String(item.selectedForGeneration ? "yes" : "no"));
         lines.add("Installed: " + juce::String(item.installedAt));
     }
@@ -650,7 +727,6 @@ juce::String ModelManagerPanel::detailBodyForRow(int row) const
         lines.add("Approx Size: " + (item.approximateSizeMb > 0
             ? (juce::String(static_cast<int>(item.approximateSizeMb)) + " MB")
             : juce::String("Unknown")));
-        lines.add("Capabilities: " + capabilityList(item.capabilities));
         if (!item.homepageUrl.empty())
         {
             lines.add("Homepage: " + juce::String(item.homepageUrl));
@@ -661,9 +737,21 @@ juce::String ModelManagerPanel::detailBodyForRow(int row) const
     else
     {
         const auto& item = snapshot_.localFolders[static_cast<std::size_t>(sourceRow)];
+        const auto inferredId = inferredModelIdForLocalFolder(item);
+        lines.add(item.valid ? "This folder looks usable." : "This folder is not usable yet.");
+        lines.add("");
+        lines.add("Action:");
+        lines.add(item.valid
+            ? "Press Use Local Model to register it as installed and make it active."
+            : "Fix the folder files first. Moon needs real model weights, not only metadata/config files.");
+        lines.add("");
+        lines.add("Detected Model: " + juce::String(item.detectedName));
+        if (!inferredId.empty())
+        {
+            lines.add("Will Register As: " + juce::String(inferredId));
+        }
         lines.add("Folder: " + item.path.string());
-        lines.add("Detected Name: " + juce::String(item.detectedName));
-        lines.add("Validation: " + juce::String(item.statusNote));
+        lines.add("Check: " + juce::String(item.statusNote));
     }
 
     return lines.joinIntoString("\n");
@@ -688,6 +776,114 @@ std::string ModelManagerPanel::selectedModelId() const
         return snapshot_.available[static_cast<std::size_t>(sourceRow)].id;
     }
     return {};
+}
+
+std::filesystem::path ModelManagerPanel::selectedLocalFolderPath() const
+{
+    if (activeSection_ != Section::Local)
+    {
+        return {};
+    }
+
+    const auto row = listBox_.getSelectedRow();
+    const auto indexes = filteredRowIndexes();
+    if (row < 0 || row >= static_cast<int>(indexes.size()))
+    {
+        return {};
+    }
+
+    return snapshot_.localFolders[static_cast<std::size_t>(indexes[static_cast<std::size_t>(row)])].path;
+}
+
+bool ModelManagerPanel::selectedLocalFolderValid() const
+{
+    if (activeSection_ != Section::Local)
+    {
+        return false;
+    }
+
+    const auto row = listBox_.getSelectedRow();
+    const auto indexes = filteredRowIndexes();
+    if (row < 0 || row >= static_cast<int>(indexes.size()))
+    {
+        return false;
+    }
+
+    return snapshot_.localFolders[static_cast<std::size_t>(indexes[static_cast<std::size_t>(row)])].valid;
+}
+
+std::string ModelManagerPanel::inferredModelIdForLocalFolder(const moon::engine::LocalModelFolderInfo& folder) const
+{
+    const auto folderName = lowercaseCopy(folder.detectedName + " " + folder.path.filename().string());
+    const auto scoreDescriptor = [&folderName, this](const moon::engine::ModelDescriptor& descriptor)
+    {
+        int score = 0;
+        const auto id = lowercaseCopy(descriptor.id);
+        const auto name = lowercaseCopy(descriptor.displayName);
+        const auto version = lowercaseCopy(descriptor.version);
+
+        if (std::find(descriptor.capabilities.begin(), descriptor.capabilities.end(), preferredCapability_) != descriptor.capabilities.end())
+        {
+            score += 20;
+        }
+        if (!id.empty() && folderName.find(id) != std::string::npos)
+        {
+            score += 50;
+        }
+        if (!name.empty() && folderName.find(name) != std::string::npos)
+        {
+            score += 40;
+        }
+        if (!version.empty() && folderName.find(version) != std::string::npos)
+        {
+            score += 20;
+        }
+        if (folderName.find("xl") != std::string::npos && (id.find("xl") != std::string::npos || name.find("xl") != std::string::npos))
+        {
+            score += 12;
+        }
+        if (folderName.find("turbo") != std::string::npos && (id.find("turbo") != std::string::npos || name.find("turbo") != std::string::npos))
+        {
+            score += 12;
+        }
+        if ((folderName.find("1.5") != std::string::npos || folderName.find("15") != std::string::npos)
+            && (id.find("15") != std::string::npos || id.find("1.5") != std::string::npos || name.find("1.5") != std::string::npos))
+        {
+            score += 10;
+        }
+        if (folderName.find("ace") != std::string::npos && (id.find("ace") != std::string::npos || name.find("ace") != std::string::npos))
+        {
+            score += 8;
+        }
+        return score;
+    };
+
+    const moon::engine::ModelDescriptor* best = nullptr;
+    int bestScore = 0;
+    for (const auto& descriptor : snapshot_.available)
+    {
+        const auto score = scoreDescriptor(descriptor);
+        if (score > bestScore)
+        {
+            best = &descriptor;
+            bestScore = score;
+        }
+    }
+
+    if (best != nullptr && bestScore > 0)
+    {
+        return best->id;
+    }
+
+    for (const auto& descriptor : snapshot_.available)
+    {
+        if (std::find(descriptor.capabilities.begin(), descriptor.capabilities.end(), preferredCapability_) != descriptor.capabilities.end())
+        {
+            return descriptor.id;
+        }
+    }
+
+    return snapshot_.available.empty() ? std::string{} : snapshot_.available.front().id;
 }
 
 std::vector<int> ModelManagerPanel::filteredRowIndexes() const
@@ -854,9 +1050,22 @@ void ModelManagerPanel::launchExistingFolderChooser(const std::string& modelId)
             runAction(
                 [this, modelId, folder](std::string& errorMessage)
                 {
-                    return addExistingCallback_ ? addExistingCallback_(modelId, folder.getFullPathName().toStdString(), errorMessage) : false;
+                    if (!addExistingCallback_ || !addExistingCallback_(modelId, folder.getFullPathName().toStdString(), errorMessage))
+                    {
+                        return false;
+                    }
+
+                    if (setActiveCallback_)
+                    {
+                        std::string activationError;
+                        if (!setActiveCallback_(preferredCapability_, modelId, activationError) && errorMessage.empty())
+                        {
+                            errorMessage = activationError;
+                        }
+                    }
+                    return true;
                 },
-                "Existing model folder registered");
+                "Existing model folder installed and activated");
         });
 }
 }

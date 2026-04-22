@@ -1,10 +1,28 @@
 #include "MainComponent.h"
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
 #if MOON_HAS_JUCE
 namespace moon::app
 {
 namespace
 {
+void appendMainComponentTrace(const std::string& line)
+{
+    if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
+    {
+        const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::app);
+        if (out)
+        {
+            out << line << "\n";
+        }
+    }
+}
+
 double beatDurationSec(double tempo, int denominator)
 {
     const double quarterNoteSec = 60.0 / juce::jmax(30.0, tempo);
@@ -631,10 +649,10 @@ MainComponent::MainComponent(AppController& controller)
           })
     , taskPanel_(controller.tasks(), controller.logger())
 {
+    appendMainComponentTrace("[bootstrap] MainComponent ctor begin");
     audioSourcePlayer_ = std::make_unique<juce::AudioSourcePlayer>();
+    appendMainComponentTrace("[bootstrap] MainComponent audioSourcePlayer created");
     audioSourcePlayer_->setSource(controller.transport().audioSource());
-    audioDeviceManager_.initialiseWithDefaultDevices(0, 2);
-    audioDeviceManager_.addAudioCallback(audioSourcePlayer_.get());
 
     addAndMakeVisible(menuButton_);
     addAndMakeVisible(tracksHeaderLabel_);
@@ -777,21 +795,29 @@ MainComponent::MainComponent(AppController& controller)
                 return moon::ui::MusicGenerationSubmission{false, {}, "Enter style or notes"};
             }
 
-            if (request.selectedModel.empty())
-            {
-                return moon::ui::MusicGenerationSubmission{
-                    false,
-                    {},
-                    "Select a ready model in the generation panel or model manager first."};
-            }
-
             if (const auto jobId = controller_.generateMusic(request); jobId.has_value())
             {
                 taskPanel_.repaint();
+                refreshAIGenerationPanelTaskState();
                 return moon::ui::MusicGenerationSubmission{true, *jobId, {}};
             }
 
-            return moon::ui::MusicGenerationSubmission{false, {}, "Music generation could not start"};
+            const auto error = controller_.lastMusicGenerationError();
+            return moon::ui::MusicGenerationSubmission{
+                false,
+                {},
+                error.empty() ? std::string("Music generation could not start") : error};
+        });
+    aiGenerationPanel_.setCancelCallback(
+        [this](const std::string& jobId)
+        {
+            const auto cancelled = controller_.cancelTask(jobId);
+            if (cancelled)
+            {
+                taskPanel_.repaint();
+                refreshAIGenerationPanelTaskState();
+            }
+            return cancelled;
         });
     aiGenerationPanel_.onHeightChanged = [this]
     {
@@ -847,6 +873,9 @@ MainComponent::MainComponent(AppController& controller)
     lastPresentedPlayheadSec_ = controller_.projectManager().state().uiState.playheadSec;
     lastTransportTickMs_ = juce::Time::getMillisecondCounterHiRes();
     startTimerHz(60);
+    appendMainComponentTrace("[bootstrap] MainComponent ctor end");
+
+    initializeAudioDeviceAsync();
 }
 
 void MainComponent::paint(juce::Graphics& g)
@@ -856,11 +885,52 @@ void MainComponent::paint(juce::Graphics& g)
 
 MainComponent::~MainComponent()
 {
-    if (audioSourcePlayer_ != nullptr)
+    if (audioSourcePlayer_ != nullptr && audioDeviceInitialized_)
     {
         audioSourcePlayer_->setSource(nullptr);
         audioDeviceManager_.removeAudioCallback(audioSourcePlayer_.get());
     }
+}
+
+void MainComponent::initializeAudioDeviceAsync()
+{
+    if (audioDeviceInitialized_ || audioDeviceInitInProgress_)
+    {
+        return;
+    }
+
+    audioDeviceInitInProgress_ = true;
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+    audioDeviceInitFuture_ = std::async(std::launch::async, [safeThis]()
+    {
+        if (safeThis == nullptr)
+        {
+            return;
+        }
+
+        appendMainComponentTrace("[bootstrap] MainComponent deferred audio init begin");
+        const auto error = safeThis->audioDeviceManager_.initialise(0, 2, nullptr, true);
+        if (!error.isEmpty())
+        {
+            appendMainComponentTrace("[bootstrap] MainComponent deferred audio init warning: " + error.toStdString());
+        }
+
+        juce::MessageManager::callAsync([safeThis]()
+        {
+            if (safeThis == nullptr)
+            {
+                return;
+            }
+
+            if (!safeThis->audioDeviceInitialized_)
+            {
+                safeThis->audioDeviceManager_.addAudioCallback(safeThis->audioSourcePlayer_.get());
+                safeThis->audioDeviceInitialized_ = true;
+            }
+            safeThis->audioDeviceInitInProgress_ = false;
+            appendMainComponentTrace("[bootstrap] MainComponent deferred audio init end");
+        });
+    });
 }
 
 void MainComponent::refreshScrollableContentSizes()
@@ -876,6 +946,7 @@ void MainComponent::refreshScrollableContentSizes()
     trackListView_.setSize(
         juce::jmax(160, trackListViewport_.getWidth()),
         trackContentHeight);
+    lastKnownTrackCount_ = trackCount;
 }
 
 void MainComponent::syncTrackStripScroll()
@@ -953,7 +1024,8 @@ void MainComponent::resized()
     inspectorPanel_.setSize(juce::jmax(340, inspectorViewport_.getWidth()), 1240);
 
     taskViewport_.setBounds(taskArea.reduced(4));
-    taskPanel_.updateContentSize(juce::jmax(320, taskViewport_.getWidth() - 14));
+    lastTaskPanelContentWidth_ = juce::jmax(320, taskViewport_.getWidth() - 14);
+    taskPanel_.updateContentSize(lastTaskPanelContentWidth_);
 }
 
 bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
@@ -1500,7 +1572,17 @@ void MainComponent::repaintPlayheadPresentation(double previousPlayheadSec, doub
 
 void MainComponent::refreshAIGenerationPanel()
 {
+    refreshAIGenerationPanelModelState();
+    refreshAIGenerationPanelTaskState();
+}
+
+void MainComponent::refreshAIGenerationPanelModelState()
+{
     aiGenerationPanel_.setModelRegistrySnapshot(controller_.modelRegistrySnapshot());
+}
+
+void MainComponent::refreshAIGenerationPanelTaskState()
+{
     aiGenerationPanel_.refreshTaskState(controller_.tasks());
 }
 
@@ -1622,6 +1704,7 @@ void MainComponent::openModelManagerForCapability(moon::engine::ModelCapability 
         [this]()
         {
             controller_.cancelAllModelOperations();
+            controller_.cancelGenerationRuntimePreparation();
             refreshAIGenerationPanel();
         });
 
@@ -1654,19 +1737,31 @@ void MainComponent::timerCallback()
     controller_.refreshPlaybackUiState();
     const auto nextPlayheadSec = controller_.projectManager().state().uiState.playheadSec;
     controller_.maintainPreviewPlayback();
-    if (controller_.pollModelOperations())
+    ++modelPollTickCounter_;
+    const bool shouldPollModels = modelPollTickCounter_ >= 24;
+    if (shouldPollModels)
     {
-        refreshAIGenerationPanel();
+        modelPollTickCounter_ = 0;
+        if (controller_.pollModelOperations())
+        {
+            refreshAIGenerationPanel();
+        }
     }
     ++taskPollTickCounter_;
     ++autosaveTickCounter_;
 
-    const bool shouldPollTasks = taskPollTickCounter_ >= 16;
+    const auto activeTaskCount = controller_.tasks().activeTaskCount();
+    const int taskPollThreshold = activeTaskCount > 0 ? 8 : 30;
+    const bool shouldPollTasks = taskPollTickCounter_ >= taskPollThreshold;
+    bool taskStateChanged = false;
     if (shouldPollTasks)
     {
         taskPollTickCounter_ = 0;
-        controller_.pollTasks();
-        refreshAIGenerationPanel();
+        taskStateChanged = controller_.pollTasks();
+        if (taskStateChanged)
+        {
+            refreshAIGenerationPanelTaskState();
+        }
     }
 
     if (autosaveTickCounter_ >= 600)
@@ -1675,10 +1770,20 @@ void MainComponent::timerCallback()
         controller_.autosaveIfNeeded();
     }
 
-    transportBar_.refresh();
-    refreshTimelineTuningWidgets();
-    refreshScrollableContentSizes();
+    ++transportRefreshTickCounter_;
+    const bool shouldRefreshTransportBar = controller_.transport().isPlaying() || transportRefreshTickCounter_ >= 3;
+    if (shouldRefreshTransportBar)
+    {
+        transportRefreshTickCounter_ = 0;
+        transportBar_.refresh();
+    }
     const int previousScrollX = timelineViewport_.getViewPositionX();
+    const auto& state = controller_.projectManager().state();
+    const int currentTrackCount = static_cast<int>(state.tracks.size());
+    if (currentTrackCount != lastKnownTrackCount_)
+    {
+        refreshScrollableContentSizes();
+    }
     const auto currentPixelsPerSecond = timelineView_.pixelsPerSecond();
     const int currentContentWidth = timelineView_.getWidth();
     const int currentViewportWidth = timelineViewport_.getWidth();
@@ -1704,7 +1809,6 @@ void MainComponent::timerCallback()
         lastTimelineScrollY_ = timelineViewport_.getViewPositionY();
         lastTrackScrollY_ = trackListViewport_.getViewPositionY();
     }
-    taskPanel_.updateContentSize(juce::jmax(320, taskViewport_.getWidth() - 14));
     repaintPlayheadPresentation(previousPlayheadSec, nextPlayheadSec, false);
     if (timelineViewport_.getViewPositionX() != previousScrollX)
     {
@@ -1726,11 +1830,18 @@ void MainComponent::timerCallback()
 
     if (shouldPollTasks)
     {
+        const auto currentTaskPanelWidth = juce::jmax(320, taskViewport_.getWidth() - 14);
+        if (currentTaskPanelWidth != lastTaskPanelContentWidth_)
+        {
+            lastTaskPanelContentWidth_ = currentTaskPanelWidth;
+            taskPanel_.updateContentSize(lastTaskPanelContentWidth_);
+        }
         refreshActionAvailability();
         refreshProjectStatusLabel();
-        trackListView_.repaint();
-        inspectorPanel_.repaint();
-        taskPanel_.repaint();
+        if (taskStateChanged || controller_.tasks().activeTaskCount() > 0)
+        {
+            taskPanel_.repaint();
+        }
     }
 }
 

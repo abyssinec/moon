@@ -20,6 +20,69 @@ namespace moon::app
 {
 namespace
 {
+bool canConnectToBackendPort(int port, int timeoutMs)
+{
+#if defined(_WIN32)
+    WSADATA wsaData{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        return false;
+    }
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET)
+    {
+        WSACleanup();
+        return false;
+    }
+
+    u_long nonBlocking = 1;
+    ioctlsocket(sock, FIONBIO, &nonBlocking);
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<u_short>(port));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    bool connected = false;
+    const auto connectResult = connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (connectResult == 0)
+    {
+        connected = true;
+    }
+    else
+    {
+        const auto error = WSAGetLastError();
+        if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEINVAL)
+        {
+            fd_set writeSet;
+            FD_ZERO(&writeSet);
+            FD_SET(sock, &writeSet);
+            TIMEVAL timeout{};
+            timeout.tv_sec = timeoutMs / 1000;
+            timeout.tv_usec = (timeoutMs % 1000) * 1000;
+            if (select(0, nullptr, &writeSet, nullptr, &timeout) > 0)
+            {
+                int socketError = 0;
+                int socketErrorSize = sizeof(socketError);
+                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&socketError), &socketErrorSize) == 0
+                    && socketError == 0)
+                {
+                    connected = true;
+                }
+            }
+        }
+    }
+
+    closesocket(sock);
+    WSACleanup();
+    return connected;
+#else
+    juce::ignoreUnused(port, timeoutMs);
+    return false;
+#endif
+}
+
 int parsePortFromBackendUrl(const std::string& backendUrl)
 {
     auto schemePos = backendUrl.find("://");
@@ -127,7 +190,6 @@ void BackendProcessManager::drainOwnedProcessOutput()
     if (!output.empty())
     {
         lastProcessOutput_ += output;
-        logger_.info("Backend process output chunk:\n" + output);
     }
 }
 
@@ -141,12 +203,11 @@ bool BackendProcessManager::lastProcessOutputSuggestsPortInUse() const
 bool BackendProcessManager::probeBackendReady()
 {
     lastError_.clear();
-    probeClient_.healthCheck();
-    if (!probeClient_.backendReachable())
+    const auto port = parsePortFromBackendUrl(probeClient_.backendUrl());
+    if (!canConnectToBackendPort(port, 40))
     {
         return false;
     }
-    logger_.info("Backend readiness probe succeeded against " + probeClient_.backendUrl());
     return true;
 }
 

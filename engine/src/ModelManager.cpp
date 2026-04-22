@@ -180,9 +180,15 @@ std::string statusStorageValue(ModelStatus status)
     {
     case ModelStatus::NotInstalled: return "not_installed";
     case ModelStatus::Downloading: return "downloading";
+    case ModelStatus::Downloaded: return "downloaded";
     case ModelStatus::Verifying: return "verifying";
+    case ModelStatus::RuntimeMissing: return "runtime_missing";
+    case ModelStatus::RuntimePreparing: return "runtime_preparing";
     case ModelStatus::Ready: return "ready";
+    case ModelStatus::Running: return "running";
     case ModelStatus::Broken: return "broken";
+    case ModelStatus::Incompatible: return "incompatible";
+    case ModelStatus::Failed: return "failed";
     case ModelStatus::UpdateAvailable: return "update_available";
     case ModelStatus::Removing: return "removing";
     }
@@ -193,9 +199,15 @@ std::string statusStorageValue(ModelStatus status)
 ModelStatus parseStatus(const std::string& text)
 {
     if (text == "downloading") return ModelStatus::Downloading;
+    if (text == "downloaded") return ModelStatus::Downloaded;
     if (text == "verifying") return ModelStatus::Verifying;
+    if (text == "runtime_missing") return ModelStatus::RuntimeMissing;
+    if (text == "runtime_preparing") return ModelStatus::RuntimePreparing;
     if (text == "ready") return ModelStatus::Ready;
+    if (text == "running") return ModelStatus::Running;
     if (text == "broken") return ModelStatus::Broken;
+    if (text == "incompatible") return ModelStatus::Incompatible;
+    if (text == "failed") return ModelStatus::Failed;
     if (text == "update_available") return ModelStatus::UpdateAvailable;
     if (text == "removing") return ModelStatus::Removing;
     return ModelStatus::NotInstalled;
@@ -784,6 +796,120 @@ bool looksLikeValidWeightFile(const std::filesystem::path& path, std::string* er
     return true;
 }
 
+std::vector<std::string> collectModelFilesForManifest(const std::filesystem::path& root)
+{
+    std::vector<std::string> files;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec))
+    {
+        if (ec || !entry.is_regular_file())
+        {
+            continue;
+        }
+
+        if (entry.path().filename() == "moon_model_install.json")
+        {
+            continue;
+        }
+
+        const auto extension = lowercaseCopy(entry.path().extension().string());
+        const auto filename = lowercaseCopy(entry.path().filename().string());
+        const bool modelRelevant = hasWeightLikeExtension(entry.path())
+            || filename == "config.json"
+            || extension == ".json"
+            || extension == ".yaml"
+            || extension == ".yml"
+            || extension == ".txt";
+        if (!modelRelevant)
+        {
+            continue;
+        }
+
+        const auto relative = std::filesystem::relative(entry.path(), root, ec);
+        files.push_back(ec ? entry.path().filename().generic_string() : relative.generic_string());
+    }
+
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+std::optional<ModelDescriptor> inferCatalogDescriptorForLocalFolder(
+    const std::vector<ModelDescriptor>& catalog,
+    const std::filesystem::path& folderPath)
+{
+    if (catalog.empty())
+    {
+        return std::nullopt;
+    }
+
+    const auto folderName = folderPath.filename().string();
+    const auto folderKey = sanitizedFolderName(folderName);
+    const auto folderLower = lowercaseCopy(folderName);
+
+    int bestScore = 0;
+    const ModelDescriptor* best = nullptr;
+    const ModelDescriptor* aceFallback = nullptr;
+    for (const auto& descriptor : catalog)
+    {
+        const auto idKey = sanitizedFolderName(descriptor.id);
+        const auto displayKey = sanitizedFolderName(descriptor.displayName);
+        const auto remoteKey = sanitizedFolderName(descriptor.remoteId);
+
+        int score = 0;
+        if (!idKey.empty() && (folderKey.find(idKey) != std::string::npos || idKey.find(folderKey) != std::string::npos))
+        {
+            score += 80;
+        }
+        if (!remoteKey.empty() && (folderKey.find(remoteKey) != std::string::npos || remoteKey.find(folderKey) != std::string::npos))
+        {
+            score += 70;
+        }
+        if (!displayKey.empty() && (folderKey.find(displayKey) != std::string::npos || displayKey.find(folderKey) != std::string::npos))
+        {
+            score += 50;
+        }
+        if (!descriptor.version.empty() && containsInsensitive(folderName, descriptor.version))
+        {
+            score += 20;
+        }
+        if (containsInsensitive(folderName, "xl") && containsInsensitive(descriptor.displayName + descriptor.id + descriptor.remoteId, "xl"))
+        {
+            score += 15;
+        }
+        if (containsInsensitive(folderName, "turbo") && containsInsensitive(descriptor.displayName + descriptor.id + descriptor.remoteId, "turbo"))
+        {
+            score += 15;
+        }
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = &descriptor;
+        }
+
+        if (aceFallback == nullptr
+            && (descriptor.id == "ace-step"
+                || containsInsensitive(descriptor.id, "ace-step")
+                || containsInsensitive(descriptor.id, "acestep")))
+        {
+            aceFallback = &descriptor;
+        }
+    }
+
+    if (best != nullptr && bestScore >= 50)
+    {
+        return *best;
+    }
+
+    if ((folderLower.find("ace") != std::string::npos || folderLower.find("acestep") != std::string::npos)
+        && aceFallback != nullptr)
+    {
+        return *aceFallback;
+    }
+
+    return std::nullopt;
+}
+
 std::vector<ModelDescriptor> parseHuggingFaceCatalog(const std::string& content)
 {
     std::vector<ModelDescriptor> descriptors;
@@ -877,18 +1003,6 @@ bool ModelManager::refresh(std::string* errorMessage)
 {
     ensureDirectories();
     seedCatalogIfNeeded();
-    if (!loadCatalog(errorMessage))
-    {
-        return false;
-    }
-
-    std::string syncWarning;
-    syncRemoteCatalog(&syncWarning);
-    if (!syncWarning.empty())
-    {
-        logger_.warning(syncWarning);
-    }
-
     if (!loadCatalog(errorMessage))
     {
         return false;
@@ -1044,11 +1158,30 @@ std::vector<ModelDescriptor> ModelManager::modelsForCapability(ModelCapability c
 std::optional<ResolvedModelInfo> ModelManager::resolveActiveModel(ModelCapability capability) const
 {
     const auto binding = activeBindings_.find(capability);
-    if (binding == activeBindings_.end())
+    if (binding != activeBindings_.end())
     {
-        return std::nullopt;
+        if (auto resolved = resolveInstalledModel(binding->second); resolved.has_value())
+        {
+            return resolved;
+        }
     }
-    return resolveInstalledModel(binding->second);
+
+    for (const auto& [_, installed] : installed_)
+    {
+        if ((installed.status == ModelStatus::Ready || installed.status == ModelStatus::UpdateAvailable)
+            && std::find(installed.capabilities.begin(), installed.capabilities.end(), capability) != installed.capabilities.end())
+        {
+            return ResolvedModelInfo{
+                installed.id,
+                installed.displayName,
+                installed.version,
+                installed.installPath,
+                installed.capabilities,
+                installed.status};
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::optional<ResolvedModelInfo> ModelManager::resolveInstalledModel(const std::string& modelId) const
@@ -1983,6 +2116,54 @@ InstalledModelInfo ModelManager::makeInstalledRecord(const ModelDescriptor& desc
 
 void ModelManager::reconcileInstalledStatuses()
 {
+    for (const auto& localFolder : scanLocalFolders())
+    {
+        if (!localFolder.valid)
+        {
+            continue;
+        }
+
+        ModelInstallManifest manifest;
+        const bool hasManifest = loadInstallManifest(localFolder.path, manifest) && !manifest.modelId.empty();
+        auto descriptor = hasManifest
+            ? findCatalogModel(manifest.modelId)
+            : inferCatalogDescriptorForLocalFolder(catalog_, localFolder.path);
+        if (!descriptor.has_value())
+        {
+            logger_.warning("Valid local model folder could not be matched to a catalog entry and was left in Local: " + localFolder.path.string());
+            continue;
+        }
+
+        const auto modelId = hasManifest ? manifest.modelId : descriptor->id;
+        if (installed_.find(modelId) != installed_.end())
+        {
+            continue;
+        }
+
+        if (!hasManifest)
+        {
+            manifest.modelId = descriptor->id;
+            manifest.remoteId = descriptor->remoteId;
+            manifest.version = descriptor->version;
+            manifest.installPath = localFolder.path;
+            manifest.files = collectModelFilesForManifest(localFolder.path);
+            saveInstallManifest(manifest, nullptr);
+            logger_.info("Created install manifest for local model folder: " + localFolder.path.string());
+        }
+
+        auto recovered = makeInstalledRecord(*descriptor, localFolder.path, "existing-folder", ModelStatus::Ready);
+        recovered.installedAt = makeTimestamp();
+        installed_[modelId] = recovered;
+        for (const auto capability : descriptor->capabilities)
+        {
+            if (activeBindings_[capability].empty())
+            {
+                activeBindings_[capability] = modelId;
+            }
+        }
+        logger_.info("Recovered installed model from local folder: " + modelId);
+    }
+
     for (auto& [id, installed] : installed_)
     {
         std::string validationError;

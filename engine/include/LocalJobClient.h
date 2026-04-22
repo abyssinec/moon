@@ -32,6 +32,7 @@ public:
     std::string createMusicGenerationJob(const MusicGenerationRequest& request) override;
     JobStatusResponse getJob(const std::string& jobId) override;
     JobResultResponse getJobResult(const std::string& jobId) const override;
+    bool cancelJob(const std::string& jobId) override;
     bool backendReachable() const noexcept override { return true; }
     const std::string& backendUrl() const noexcept override { return backendUrl_; }
 

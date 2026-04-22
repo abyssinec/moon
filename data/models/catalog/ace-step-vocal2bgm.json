@@ -1,0 +1,12 @@
+{
+  "id": "ace-step-vocal2bgm",
+  "display_name": "ACE-Step Vocal2BGM",
+  "version": "1.0",
+  "source": "catalog",
+  "provider": "ACE-Step",
+  "description": "ACE-Step variant focused on vocal-to-bgm style tasks.",
+  "download_uri": "",
+  "approximate_size_mb": 0,
+  "supports_existing_folder": true,
+  "capabilities": ["vocal2bgm"]
+}

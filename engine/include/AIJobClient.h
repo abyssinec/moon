@@ -61,6 +61,7 @@ public:
     virtual std::string createMusicGenerationJob(const MusicGenerationRequest& request) = 0;
     virtual JobStatusResponse getJob(const std::string& jobId) = 0;
     virtual JobResultResponse getJobResult(const std::string& jobId) const = 0;
+    virtual bool cancelJob(const std::string& jobId) = 0;
     virtual bool backendReachable() const noexcept = 0;
     virtual const std::string& backendUrl() const noexcept = 0;
 };
@@ -85,6 +86,8 @@ public:
     std::string createMusicGenerationJob(const MusicGenerationRequest& request) override;
     JobStatusResponse getJob(const std::string& jobId) override;
     JobResultResponse getJobResult(const std::string& jobId) const override;
+    bool cancelJob(const std::string& jobId) override;
+    void setBackendReachableHint(bool reachable) const noexcept;
     bool backendReachable() const noexcept override { return backendReachable_; }
     const std::string& backendUrl() const noexcept override { return backendUrl_; }
 

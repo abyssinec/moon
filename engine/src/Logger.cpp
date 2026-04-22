@@ -41,6 +41,20 @@ std::string makeTimestamp()
 Logger::Logger()
     : logFilePath_(resolveLogFilePath())
 {
+    writerThread_ = std::thread([this]() { writerLoop(); });
+}
+
+Logger::~Logger()
+{
+    {
+        std::scoped_lock lock(mutex_);
+        stopWriter_ = true;
+    }
+    writerCv_.notify_one();
+    if (writerThread_.joinable())
+    {
+        writerThread_.join();
+    }
 }
 
 void Logger::info(const std::string& message)
@@ -92,19 +106,51 @@ std::optional<std::string> Logger::latestErrorSince(std::size_t lineIndex) const
 
 void Logger::append(const std::string& level, const std::string& message)
 {
-    std::scoped_lock lock(mutex_);
     const auto line = "[" + makeTimestamp() + "][" + level + "] " + message;
-    lines_.push_back(line);
-    if (lines_.size() > 200)
     {
-        lines_.erase(lines_.begin(), lines_.begin() + static_cast<std::ptrdiff_t>(lines_.size() - 200));
+        std::scoped_lock lock(mutex_);
+        lines_.push_back(line);
+        if (lines_.size() > 200)
+        {
+            lines_.erase(lines_.begin(), lines_.begin() + static_cast<std::ptrdiff_t>(lines_.size() - 200));
+        }
+        pendingWrites_.push_back(line);
     }
+    writerCv_.notify_one();
+}
 
-    std::filesystem::create_directories(logFilePath_.parent_path());
-    std::ofstream out(logFilePath_, std::ios::app);
-    if (out)
+void Logger::writerLoop()
+{
+    while (true)
     {
-        out << line << "\n";
+        std::deque<std::string> pending;
+        {
+            std::unique_lock lock(mutex_);
+            writerCv_.wait(lock, [this]()
+            {
+                return stopWriter_ || !pendingWrites_.empty();
+            });
+
+            if (stopWriter_ && pendingWrites_.empty())
+            {
+                break;
+            }
+
+            pending.swap(pendingWrites_);
+        }
+
+        std::filesystem::create_directories(logFilePath_.parent_path());
+        std::ofstream out(logFilePath_, std::ios::app);
+        if (!out)
+        {
+            continue;
+        }
+
+        for (const auto& line : pending)
+        {
+            out << line << "\n";
+        }
+        out.flush();
     }
 }
 }

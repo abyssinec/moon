@@ -526,6 +526,23 @@ JobResultResponse LocalJobClient::getJobResult(const std::string& jobId) const
     return it->second.result;
 }
 
+bool LocalJobClient::cancelJob(const std::string& jobId)
+{
+    std::scoped_lock lock(jobsMutex_);
+    const auto it = jobs_.find(jobId);
+    if (it == jobs_.end())
+    {
+        return false;
+    }
+
+    it->second.status.status = "cancelled";
+    it->second.status.progress = 1.0;
+    it->second.status.message = "cancelled";
+    it->second.result.status = "cancelled";
+    it->second.result.outputAudioPath.clear();
+    return true;
+}
+
 std::string LocalJobClient::createJob(const std::string& type,
                                       const std::string& inputAudioPath,
                                       const std::string& modelName,

@@ -62,8 +62,6 @@ std::string AppBootstrapCoordinator::detailsText() const
     details += "\nPython: " + (processManager_.pythonPath().empty() ? std::string("<auto/system python>") : processManager_.pythonPath());
     details += "\nCommand: " + (processManager_.launcherCommand().empty() ? std::string("<not started>") : processManager_.launcherCommand());
     details += "\nLast error: " + (processManager_.lastError().empty() ? std::string("<none>") : processManager_.lastError());
-    details += "\nLast process output: " + (processManager_.lastProcessOutput().empty() ? std::string("<none>") : processManager_.lastProcessOutput());
-    details += "\nApp log: " + processManager_.logFilePath().string();
     return details;
 }
 

@@ -20,6 +20,7 @@ private:
 
     AppController& controller_;
     std::unique_ptr<MainComponent> mainComponent_;
+    bool fullscreenApplied_{false};
 };
 }
 #else

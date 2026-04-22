@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <future>
+#include <mutex>
 
 #include "AIJobClient.h"
 #include "Logger.h"
@@ -60,7 +62,8 @@ public:
                                      const std::string& targetTrackId,
                                      const std::string& preferredTrackName,
                                      double startSec);
-    void poll(ProjectState& state, TimelineFacade& timeline);
+    bool cancelTask(const std::string& jobId);
+    bool poll(ProjectState& state, TimelineFacade& timeline);
     std::size_t activeTaskCount() const;
     std::size_t completedTaskCount() const;
     std::size_t failedTaskCount() const;
@@ -68,9 +71,32 @@ public:
     std::vector<TaskInfo> recentTasks() const;
 
 private:
+    struct PolledJob
+    {
+        std::string jobId;
+        JobStatusResponse status;
+        std::optional<JobResultResponse> result;
+        std::string errorMessage;
+    };
+
+    struct PollBatchResult
+    {
+        std::vector<PolledJob> jobs;
+    };
+
+    void launchPollBatch();
+    bool consumePollBatch(ProjectState& state, TimelineFacade& timeline);
+    bool applyCompletedJobResult(const PendingInsertion& pending,
+                                 const JobResultResponse& result,
+                                 ProjectState& state,
+                                 TimelineFacade& timeline);
+
     JobClientProtocol& client_;
     Logger& logger_;
     std::unordered_map<std::string, TaskInfo> tasks_;
     std::unordered_map<std::string, PendingInsertion> pendingInsertions_;
+    std::future<PollBatchResult> pollFuture_;
+    bool pollInFlight_{false};
+    mutable std::mutex clientMutex_;
 };
 }
