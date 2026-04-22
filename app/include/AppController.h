@@ -12,6 +12,7 @@
 #include "ExportService.h"
 #include "LocalJobClient.h"
 #include "Logger.h"
+#include "ModelManager.h"
 #include "MusicGeneration.h"
 #include "ClipOperations.h"
 #include "ProjectManager.h"
@@ -91,6 +92,18 @@ public:
     bool setProjectTempo(double tempo);
     bool setProjectTimeSignature(int numerator, int denominator);
     std::vector<std::string> availableMusicGenerationModels() const;
+    const moon::engine::ModelRegistrySnapshot& modelRegistrySnapshot() const noexcept { return modelRegistrySnapshot_; }
+    bool refreshModelRegistry(std::string* errorMessage = nullptr);
+    bool syncRemoteModelCatalog(std::string* errorMessage = nullptr);
+    bool pollModelOperations(std::string* errorMessage = nullptr);
+    bool setActiveGenerationModel(moon::engine::ModelCapability capability, const std::string& modelId, std::string& errorMessage);
+    bool addExistingModelFolder(const std::string& modelId, const std::filesystem::path& folderPath, std::string& errorMessage);
+    bool verifyInstalledModel(const std::string& modelId, std::string& errorMessage);
+    bool removeInstalledModel(const std::string& modelId, std::string& errorMessage);
+    bool downloadModel(const std::string& modelId, std::string& errorMessage);
+    bool updateModel(const std::string& modelId, std::string& errorMessage);
+    bool cancelAllModelOperations(std::string* errorMessage = nullptr);
+    std::filesystem::path modelsRootDirectory() const;
     bool hasUnsavedChanges() const noexcept { return projectDirty_; }
     bool hasStalePreview() const noexcept { return previewPlaybackDirty_; }
     std::optional<std::string> projectFilePath() const;
@@ -119,7 +132,9 @@ private:
     std::unique_ptr<moon::engine::WaveformService> waveformService_;
     std::unique_ptr<moon::engine::ExportService> exportService_;
     std::unique_ptr<moon::engine::JobClientProtocol> aiJobClient_;
+    std::unique_ptr<moon::engine::ModelManager> modelManager_;
     std::unique_ptr<moon::engine::TaskManager> taskManager_;
+    moon::engine::ModelRegistrySnapshot modelRegistrySnapshot_;
     bool previewPlaybackActive_{false};
     bool previewPlaybackDirty_{true};
     bool projectDirty_{false};

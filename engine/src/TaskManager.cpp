@@ -313,9 +313,30 @@ void TaskManager::poll(ProjectState& state, TimelineFacade& timeline)
                 pending.startSec,
                 pending.durationSec > 0.0 ? pending.durationSec : 12.0,
                 {},
-                pending.musicRequest.selectedModel.empty() ? "ace_step" : pending.musicRequest.selectedModel,
-                pending.musicRequest.stylesPrompt + (pending.musicRequest.lyricsPrompt.empty() ? "" : (" | " + pending.musicRequest.lyricsPrompt)),
+                pending.musicRequest.selectedModelDisplayName.empty() ? (pending.musicRequest.selectedModel.empty() ? "ace_step" : pending.musicRequest.selectedModel) : pending.musicRequest.selectedModelDisplayName,
+                pending.musicRequest.stylesPrompt + (pending.musicRequest.secondaryPrompt.empty() ? "" : (" | " + pending.musicRequest.secondaryPrompt)),
                 FileHash::hashPath(result.outputAudioPath));
+
+            for (const auto& clip : state.clips)
+            {
+                if (clip.id != clipId)
+                {
+                    continue;
+                }
+
+                if (auto assetIt = state.generatedAssets.find(clip.assetId); assetIt != state.generatedAssets.end())
+                {
+                    assetIt->second.modelId = pending.musicRequest.selectedModel;
+                    assetIt->second.modelName = pending.musicRequest.selectedModelDisplayName.empty()
+                        ? (pending.musicRequest.selectedModel.empty() ? std::string("ace_step") : pending.musicRequest.selectedModel)
+                        : pending.musicRequest.selectedModelDisplayName;
+                    assetIt->second.generationTarget = std::string(musicGenerationCategoryLabel(pending.musicRequest.category));
+                    assetIt->second.prompt = pending.musicRequest.stylesPrompt;
+                    assetIt->second.secondaryPrompt = pending.musicRequest.secondaryPrompt;
+                    assetIt->second.instrumental = pending.musicRequest.isInstrumental;
+                }
+                break;
+            }
             timeline.selectTrack(state, trackId);
             timeline.selectClip(state, clipId);
             state.uiState.playheadSec = pending.startSec;

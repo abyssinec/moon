@@ -10,6 +10,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "InspectorPanel.h"
 #include "AIGenerationPanel.h"
+#include "ModelManagerPanel.h"
 #include "TaskPanel.h"
 #include "TimelineView.h"
 #include "TrackListView.h"
@@ -140,6 +141,7 @@ private:
     void refreshFpsCounter(double deltaSec);
     void repaintPlayheadPresentation(double previousPlayheadSec, double nextPlayheadSec, bool forceFull);
     void refreshAIGenerationPanel();
+    void openModelManagerForCapability(moon::engine::ModelCapability capability);
     void timerCallback() override;
     bool keyPressed(const juce::KeyPress& key) override;
 

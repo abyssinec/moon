@@ -105,6 +105,7 @@ public:
         asset.path = audioPath;
         asset.generated = true;
         asset.sourceClipId = sourceClipId;
+        asset.modelId = modelName;
         asset.modelName = modelName;
         asset.prompt = prompt;
         asset.createdAt = makeTimestamp();

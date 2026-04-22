@@ -13,6 +13,7 @@
     src/ExportService.cpp
     src/AIJobClient.cpp
     src/LocalJobClient.cpp
+    src/ModelManager.cpp
     src/TaskManager.cpp
     src/Logger.cpp
     src/SettingsService.cpp

@@ -12,10 +12,14 @@ struct AssetInfo
     std::string path;
     bool generated{false};
     std::string sourceClipId;
+    std::string modelId;
     std::string modelName;
+    std::string generationTarget;
     std::string prompt;
+    std::string secondaryPrompt;
     std::string createdAt;
     std::string cacheKey;
+    bool instrumental{false};
 };
 
 struct TrackInfo
@@ -69,7 +73,7 @@ struct EngineIntegrationState
 
 struct ProjectState
 {
-    int schemaVersion{1};
+    int schemaVersion{2};
     std::string projectName{"Untitled"};
     int sampleRate{44100};
     double tempo{120.0};

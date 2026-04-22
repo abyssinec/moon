@@ -1,9 +1,10 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <string>
-#include <vector>
 
+#include "ModelManager.h"
 #include "MusicGeneration.h"
 #include "TaskManager.h"
 
@@ -28,7 +29,9 @@ public:
     void resized() override;
 
     void setCreateCallback(std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> callback);
-    void setAvailableModels(const std::vector<std::string>& models);
+    void setModelRegistrySnapshot(const moon::engine::ModelRegistrySnapshot& snapshot);
+    void setModelSelectionCallback(std::function<bool(moon::engine::ModelCapability, const std::string&, std::string&)> callback);
+    void setOpenModelManagerCallback(std::function<void(moon::engine::ModelCapability)> callback);
     void refreshTaskState(const moon::engine::TaskManager& taskManager);
 
     int preferredHeight() const noexcept;
@@ -38,33 +41,50 @@ public:
 
 private:
     void toggleExpanded();
-    void showCategoryMenu();
+    void showTargetMenu();
+    void showDeviceMenu();
     void showModelMenu();
     void submitCreate();
     void refreshControls();
+    void updateSecondaryProfile();
+    void storeSecondaryPromptForCurrentTarget();
+    void restoreSecondaryPromptForCurrentTarget();
     moon::engine::MusicGenerationRequest buildRequest() const;
-    juce::String categoryLabel() const;
-    juce::String modelLabel() const;
     bool requestLooksEmpty() const;
+    juce::String currentTargetLabel() const;
+    juce::String currentDeviceLabel() const;
+    juce::String activeModelLabel() const;
+    juce::String activeModelStatusLabel() const;
+    std::string activeModelId() const;
+    std::string activeModelVersion() const;
+    std::string activeModelPath() const;
+    moon::engine::ModelCapability currentCapability() const noexcept;
+    moon::engine::GenerationTargetProfile currentTargetProfile() const noexcept;
 
     std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> createCallback_;
-    std::vector<std::string> availableModels_;
-    std::string selectedModel_;
-    moon::engine::MusicGenerationCategory selectedCategory_{moon::engine::MusicGenerationCategory::Song};
+    std::function<bool(moon::engine::ModelCapability, const std::string&, std::string&)> modelSelectionCallback_;
+    std::function<void(moon::engine::ModelCapability)> openModelManagerCallback_;
+    moon::engine::ModelRegistrySnapshot modelRegistrySnapshot_;
+    std::map<moon::engine::GenerationTarget, std::string> secondaryPromptByTarget_;
+    moon::engine::GenerationTarget selectedTarget_{moon::engine::GenerationTarget::Song};
+    moon::engine::ComputeDevicePreference selectedDevicePreference_{moon::engine::ComputeDevicePreference::Auto};
     bool expanded_{false};
     bool generating_{false};
     std::string activeJobId_;
-    juce::String statusText_{"Acestep generation ready"};
+    juce::String statusText_{"Generation ready"};
 
-    juce::TextButton expandButton_{"+"};
-    juce::TextButton categoryButton_{"Song"};
-    juce::TextButton modelButton_{"Model"};
+    juce::TextButton expandButton_{">"};
+    juce::TextButton modelButton_{"No model"};
+    juce::TextButton manageModelsButton_{"Models..."};
+    juce::TextButton targetButton_{"Song"};
+    juce::TextButton deviceButton_{"Auto"};
     juce::TextButton createButton_{"Create"};
     juce::Label statusLabel_;
+    juce::Label modelCaptionLabel_;
     juce::Label stylesLabel_;
-    juce::Label lyricsLabel_;
+    juce::Label secondaryLabel_;
     juce::TextEditor stylesEditor_;
-    juce::TextEditor lyricsEditor_;
+    juce::TextEditor secondaryEditor_;
 };
 }
 #else

@@ -9,13 +9,21 @@ namespace moon::ui
 {
 namespace
 {
-constexpr int kCollapsedHeight = 58;
-constexpr int kExpandedHeight = 214;
+constexpr int kCollapsedHeight = 60;
+constexpr int kExpandedHeight = 230;
+
+juce::Colour panelFill()                     { return juce::Colour::fromRGB(15, 19, 24); }
+juce::Colour panelOutline()                  { return juce::Colour::fromRGB(40, 46, 54); }
+juce::Colour controlFill()                   { return juce::Colour::fromRGB(28, 33, 40); }
+juce::Colour controlOutline()                { return juce::Colour::fromRGB(54, 60, 69); }
+juce::Colour editorFill()                    { return juce::Colour::fromRGB(17, 21, 27); }
+juce::Colour createFill()                    { return juce::Colour::fromRGB(43, 169, 237); }
+juce::Colour createFillBusy()                { return juce::Colour::fromRGB(78, 110, 136); }
 
 void styleSecondaryButton(juce::TextButton& button)
 {
-    button.setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(34, 37, 43));
-    button.setColour(juce::TextButton::buttonOnColourId, juce::Colour::fromRGB(34, 37, 43));
+    button.setColour(juce::TextButton::buttonColourId, controlFill());
+    button.setColour(juce::TextButton::buttonOnColourId, controlFill());
     button.setColour(juce::TextButton::textColourOffId, juce::Colours::white.withAlpha(0.92f));
     button.setColour(juce::TextButton::textColourOnId, juce::Colours::white.withAlpha(0.92f));
 }
@@ -25,103 +33,154 @@ void stylePromptEditor(juce::TextEditor& editor, const juce::String& placeholder
     editor.setMultiLine(true);
     editor.setReturnKeyStartsNewLine(true);
     editor.setScrollbarsShown(true);
-    editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour::fromRGB(18, 22, 28));
-    editor.setColour(juce::TextEditor::outlineColourId, juce::Colour::fromRGB(46, 51, 59));
-    editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour::fromRGB(74, 126, 184));
-    editor.setColour(juce::TextEditor::textColourId, juce::Colours::white.withAlpha(0.94f));
-    editor.setColour(juce::TextEditor::highlightColourId, juce::Colour::fromRGB(56, 102, 171).withAlpha(0.58f));
-    editor.setColour(juce::TextEditor::highlightedTextColourId, juce::Colours::white);
-    editor.setColour(juce::CaretComponent::caretColourId, juce::Colours::white);
-    editor.setTextToShowWhenEmpty(placeholder, juce::Colours::white.withAlpha(0.28f));
     editor.setPopupMenuEnabled(true);
     editor.setIndents(10, 10);
-    editor.setFont(juce::FontOptions(13.0f));
+    editor.setFont(juce::FontOptions(13.2f));
+    editor.setColour(juce::TextEditor::backgroundColourId, editorFill());
+    editor.setColour(juce::TextEditor::outlineColourId, controlOutline());
+    editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour::fromRGB(86, 150, 227));
+    editor.setColour(juce::TextEditor::textColourId, juce::Colours::white.withAlpha(0.95f));
+    editor.setColour(juce::TextEditor::highlightColourId, juce::Colour::fromRGB(71, 110, 183).withAlpha(0.56f));
+    editor.setColour(juce::TextEditor::highlightedTextColourId, juce::Colours::white);
+    editor.setColour(juce::CaretComponent::caretColourId, juce::Colours::white);
+    editor.setTextToShowWhenEmpty(placeholder, juce::Colours::white.withAlpha(0.30f));
 }
 
-juce::String displayModelName(const std::string& model)
+juce::String modelDisplayName(const moon::engine::InstalledModelInfo* model)
 {
-    if (model == "ace_step_api")
+    if (model == nullptr)
     {
-        return "Acestep API";
+        return "No model";
     }
-    if (model == "ace_step")
+
+    if (!model->displayName.empty())
     {
-        return "Acestep";
+        return juce::String(model->displayName);
     }
-    return juce::String(model);
+
+    return juce::String(model->id);
+}
+
+const moon::engine::InstalledModelInfo* findInstalledModel(const moon::engine::ModelRegistrySnapshot& snapshot, const std::string& modelId)
+{
+    const auto it = std::find_if(
+        snapshot.installed.begin(),
+        snapshot.installed.end(),
+        [&modelId](const moon::engine::InstalledModelInfo& item)
+        {
+            return item.id == modelId;
+        });
+    return it == snapshot.installed.end() ? nullptr : &(*it);
 }
 }
 
 AIGenerationPanel::AIGenerationPanel()
 {
     addAndMakeVisible(expandButton_);
-    addAndMakeVisible(categoryButton_);
     addAndMakeVisible(modelButton_);
+    addAndMakeVisible(manageModelsButton_);
+    addAndMakeVisible(targetButton_);
+    addAndMakeVisible(deviceButton_);
     addAndMakeVisible(createButton_);
     addAndMakeVisible(statusLabel_);
+    addAndMakeVisible(modelCaptionLabel_);
     addAndMakeVisible(stylesLabel_);
-    addAndMakeVisible(lyricsLabel_);
+    addAndMakeVisible(secondaryLabel_);
     addAndMakeVisible(stylesEditor_);
-    addAndMakeVisible(lyricsEditor_);
+    addAndMakeVisible(secondaryEditor_);
 
     styleSecondaryButton(expandButton_);
-    styleSecondaryButton(categoryButton_);
     styleSecondaryButton(modelButton_);
+    styleSecondaryButton(manageModelsButton_);
+    styleSecondaryButton(targetButton_);
+    styleSecondaryButton(deviceButton_);
 
-    expandButton_.setClickingTogglesState(false);
-    expandButton_.onClick = [this] { toggleExpanded(); };
-    categoryButton_.onClick = [this] { showCategoryMenu(); };
-    modelButton_.onClick = [this] { showModelMenu(); };
-    createButton_.onClick = [this] { submitCreate(); };
-
-    createButton_.setColour(juce::TextButton::buttonColourId, juce::Colour::fromRGB(43, 169, 237));
-    createButton_.setColour(juce::TextButton::buttonOnColourId, juce::Colour::fromRGB(32, 144, 205));
+    createButton_.setColour(juce::TextButton::buttonColourId, createFill());
+    createButton_.setColour(juce::TextButton::buttonOnColourId, createFill());
     createButton_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
     createButton_.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
 
+    expandButton_.onClick = [this] { toggleExpanded(); };
+    modelButton_.onClick = [this] { showModelMenu(); };
+    manageModelsButton_.onClick = [this]
+    {
+        if (openModelManagerCallback_)
+        {
+            openModelManagerCallback_(currentCapability());
+        }
+    };
+    targetButton_.onClick = [this] { showTargetMenu(); };
+    deviceButton_.onClick = [this] { showDeviceMenu(); };
+    createButton_.onClick = [this] { submitCreate(); };
+
+    modelCaptionLabel_.setText("Model", juce::dontSendNotification);
+    modelCaptionLabel_.setJustificationType(juce::Justification::centredLeft);
+    modelCaptionLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.60f));
+    modelCaptionLabel_.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+
     statusLabel_.setJustificationType(juce::Justification::centredLeft);
-    statusLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.68f));
     statusLabel_.setInterceptsMouseClicks(false, false);
+    statusLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.68f));
 
-    stylesLabel_.setText("Styles", juce::dontSendNotification);
-    lyricsLabel_.setText("Lyrics", juce::dontSendNotification);
-    stylesLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.82f));
-    lyricsLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.82f));
-    stylesLabel_.setFont(juce::FontOptions(12.5f, juce::Font::bold));
-    lyricsLabel_.setFont(juce::FontOptions(12.5f, juce::Font::bold));
+    stylesLabel_.setText("Style Prompt", juce::dontSendNotification);
+    secondaryLabel_.setText("Lyrics", juce::dontSendNotification);
+    for (auto* label : {&stylesLabel_, &secondaryLabel_})
+    {
+        label->setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.84f));
+        label->setFont(juce::FontOptions(12.5f, juce::Font::bold));
+    }
 
-    stylePromptEditor(stylesEditor_, "Describe style, genre, mood, instrumentation, production, tempo, references...");
-    stylePromptEditor(lyricsEditor_, "Write some lyrics or leave blank for instrumental");
+    stylePromptEditor(stylesEditor_, "Describe genre, mood, instrumentation, production style, era, texture...");
+    stylePromptEditor(secondaryEditor_, "Write lyrics for the song...");
+
     stylesEditor_.onTextChange = [this]
     {
         if (!generating_)
         {
-            if (requestLooksEmpty())
-            {
-                statusText_ = availableModels_.empty() ? juce::String("Acestep unavailable") : juce::String("Enter styles or lyrics");
-            }
-            else if (activeJobId_.empty())
-            {
-                statusText_ = juce::String("Ready to create");
-            }
             refreshControls();
         }
     };
-    lyricsEditor_.onTextChange = stylesEditor_.onTextChange;
+    secondaryEditor_.onTextChange = [this]
+    {
+        if (!generating_)
+        {
+            storeSecondaryPromptForCurrentTarget();
+            refreshControls();
+        }
+    };
 
+    secondaryPromptByTarget_[selectedTarget_] = {};
+    updateSecondaryProfile();
     refreshControls();
 }
 
 void AIGenerationPanel::paint(juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat().reduced(4.0f, 2.0f);
-    g.setColour(juce::Colour::fromRGB(16, 19, 24));
-    g.fillRoundedRectangle(bounds, 10.0f);
-    g.setColour(juce::Colour::fromRGB(41, 46, 54));
-    g.drawRoundedRectangle(bounds, 10.0f, 1.0f);
+    g.setColour(panelFill());
+    g.fillRoundedRectangle(bounds, 11.0f);
+    g.setColour(panelOutline());
+    g.drawRoundedRectangle(bounds, 11.0f, 1.0f);
 
-    g.setColour(juce::Colour::fromRGB(23, 27, 33));
-    g.fillRoundedRectangle(bounds.removeFromTop(52.0f), 10.0f);
+    auto header = bounds;
+    header.removeFromBottom(std::max(0.0f, bounds.getHeight() - 50.0f));
+    g.setColour(juce::Colour::fromRGB(22, 27, 33));
+    g.fillRoundedRectangle(header, 11.0f);
+
+    if (!expanded_)
+    {
+        return;
+    }
+
+    auto content = bounds.reduced(12.0f, 12.0f);
+    content.removeFromTop(42.0f);
+    auto columns = content;
+    auto left = columns.removeFromLeft(columns.getWidth() * 0.5f - 4.0f);
+    auto right = columns.reduced(8.0f, 0.0f);
+
+    g.setColour(controlOutline().withAlpha(0.42f));
+    g.drawRoundedRectangle(left.toFloat().reduced(-1.0f, -1.0f), 10.0f, 1.0f);
+    g.drawRoundedRectangle(right.toFloat().reduced(-1.0f, -1.0f), 10.0f, 1.0f);
 }
 
 void AIGenerationPanel::resized()
@@ -129,21 +188,26 @@ void AIGenerationPanel::resized()
     auto area = getLocalBounds().reduced(12, 10);
     auto header = area.removeFromTop(34);
 
-    expandButton_.setBounds(header.removeFromLeft(34));
+    expandButton_.setBounds(header.removeFromLeft(30));
     header.removeFromLeft(8);
-    categoryButton_.setBounds(header.removeFromLeft(148));
+    modelCaptionLabel_.setBounds(header.removeFromLeft(44));
+    modelButton_.setBounds(header.removeFromLeft(180));
     header.removeFromLeft(8);
-    modelButton_.setBounds(header.removeFromLeft(144));
-    header.removeFromLeft(10);
-    createButton_.setBounds(header.removeFromRight(118));
+    manageModelsButton_.setBounds(header.removeFromLeft(126));
+    header.removeFromLeft(8);
+    targetButton_.setBounds(header.removeFromLeft(146));
+    header.removeFromLeft(8);
+    deviceButton_.setBounds(header.removeFromLeft(86));
+    header.removeFromRight(8);
+    createButton_.setBounds(header.removeFromRight(112));
     header.removeFromRight(8);
     statusLabel_.setBounds(header);
 
     const bool showExpanded = expanded_;
     stylesLabel_.setVisible(showExpanded);
-    lyricsLabel_.setVisible(showExpanded);
+    secondaryLabel_.setVisible(showExpanded);
     stylesEditor_.setVisible(showExpanded);
-    lyricsEditor_.setVisible(showExpanded);
+    secondaryEditor_.setVisible(showExpanded);
 
     if (!showExpanded)
     {
@@ -153,15 +217,16 @@ void AIGenerationPanel::resized()
     area.removeFromTop(10);
     auto columns = area;
     auto left = columns.removeFromLeft(columns.getWidth() / 2).reduced(0, 0);
-    auto right = columns.reduced(0, 0);
+    columns.removeFromLeft(8);
+    auto right = columns;
 
     stylesLabel_.setBounds(left.removeFromTop(18));
     left.removeFromTop(4);
     stylesEditor_.setBounds(left);
 
-    lyricsLabel_.setBounds(right.removeFromTop(18));
+    secondaryLabel_.setBounds(right.removeFromTop(18));
     right.removeFromTop(4);
-    lyricsEditor_.setBounds(right);
+    secondaryEditor_.setBounds(right);
 }
 
 void AIGenerationPanel::setCreateCallback(std::function<MusicGenerationSubmission(const moon::engine::MusicGenerationRequest&)> callback)
@@ -169,31 +234,20 @@ void AIGenerationPanel::setCreateCallback(std::function<MusicGenerationSubmissio
     createCallback_ = std::move(callback);
 }
 
-void AIGenerationPanel::setAvailableModels(const std::vector<std::string>& models)
+void AIGenerationPanel::setModelRegistrySnapshot(const moon::engine::ModelRegistrySnapshot& snapshot)
 {
-    availableModels_ = models;
-    if (selectedModel_.empty() || std::find(availableModels_.begin(), availableModels_.end(), selectedModel_) == availableModels_.end())
-    {
-        selectedModel_ = availableModels_.empty() ? std::string{} : availableModels_.front();
-    }
-
-    if (!generating_)
-    {
-        if (availableModels_.empty())
-        {
-            statusText_ = juce::String("Acestep unavailable");
-        }
-        else if (requestLooksEmpty())
-        {
-            statusText_ = juce::String("Enter styles or lyrics");
-        }
-        else
-        {
-            statusText_ = juce::String("Ready to create");
-        }
-    }
-
+    modelRegistrySnapshot_ = snapshot;
     refreshControls();
+}
+
+void AIGenerationPanel::setModelSelectionCallback(std::function<bool(moon::engine::ModelCapability, const std::string&, std::string&)> callback)
+{
+    modelSelectionCallback_ = std::move(callback);
+}
+
+void AIGenerationPanel::setOpenModelManagerCallback(std::function<void(moon::engine::ModelCapability)> callback)
+{
+    openModelManagerCallback_ = std::move(callback);
 }
 
 void AIGenerationPanel::refreshTaskState(const moon::engine::TaskManager& taskManager)
@@ -222,7 +276,7 @@ void AIGenerationPanel::refreshTaskState(const moon::engine::TaskManager& taskMa
     {
         generating_ = false;
         activeJobId_.clear();
-        statusText_ = juce::String("Generated clip added to timeline");
+        statusText_ = "Generated clip added to timeline";
     }
     else if (task.status == "failed")
     {
@@ -249,56 +303,130 @@ void AIGenerationPanel::toggleExpanded()
     }
 }
 
-void AIGenerationPanel::showCategoryMenu()
+void AIGenerationPanel::showTargetMenu()
 {
     juce::PopupMenu menu;
     int itemId = 1;
-    for (const auto category : moon::engine::kMusicGenerationCategories)
+    for (const auto target : moon::engine::kGenerationTargets)
     {
         menu.addItem(
             itemId++,
-            juce::String(std::string(moon::engine::musicGenerationCategoryLabel(category))),
+            juce::String(std::string(moon::engine::musicGenerationCategoryLabel(target))),
             true,
-            category == selectedCategory_);
+            target == selectedTarget_);
     }
 
     menu.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(&categoryButton_),
+        juce::PopupMenu::Options().withTargetComponent(&targetButton_),
         [this](int result)
         {
-            if (result <= 0 || result > static_cast<int>(moon::engine::kMusicGenerationCategories.size()))
+            if (result <= 0 || result > static_cast<int>(moon::engine::kGenerationTargets.size()))
             {
                 return;
             }
 
-            selectedCategory_ = moon::engine::kMusicGenerationCategories[static_cast<std::size_t>(result - 1)];
+            storeSecondaryPromptForCurrentTarget();
+            selectedTarget_ = moon::engine::kGenerationTargets[static_cast<std::size_t>(result - 1)];
+            restoreSecondaryPromptForCurrentTarget();
+            updateSecondaryProfile();
+            refreshControls();
+        });
+}
+
+void AIGenerationPanel::showDeviceMenu()
+{
+    juce::PopupMenu menu;
+    const std::array<moon::engine::ComputeDevicePreference, 3> options{
+        moon::engine::ComputeDevicePreference::Auto,
+        moon::engine::ComputeDevicePreference::GPU,
+        moon::engine::ComputeDevicePreference::CPU,
+    };
+
+    int itemId = 1;
+    for (const auto option : options)
+    {
+        menu.addItem(
+            itemId++,
+            juce::String(std::string(moon::engine::computeDevicePreferenceLabel(option))),
+            true,
+            option == selectedDevicePreference_);
+    }
+
+    menu.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(&deviceButton_),
+        [this, options](int result)
+        {
+            if (result <= 0 || result > static_cast<int>(options.size()))
+            {
+                return;
+            }
+
+            selectedDevicePreference_ = options[static_cast<std::size_t>(result - 1)];
             refreshControls();
         });
 }
 
 void AIGenerationPanel::showModelMenu()
 {
-    if (availableModels_.empty())
+    juce::PopupMenu menu;
+    const auto capability = currentCapability();
+    const auto activeModel = activeModelId();
+
+    int itemId = 1;
+    for (const auto& model : modelRegistrySnapshot_.installed)
     {
-        return;
+        if (model.status != moon::engine::ModelStatus::Ready && model.status != moon::engine::ModelStatus::UpdateAvailable)
+        {
+            continue;
+        }
+
+        if (std::find(model.capabilities.begin(), model.capabilities.end(), capability) == model.capabilities.end())
+        {
+            continue;
+        }
+
+        auto label = juce::String(model.displayName.empty() ? model.id : model.displayName);
+        if (!model.version.empty())
+        {
+            label << "  v" << model.version;
+        }
+        menu.addItem(itemId++, label, true, model.id == activeModel);
     }
 
-    juce::PopupMenu menu;
-    for (std::size_t i = 0; i < availableModels_.size(); ++i)
+    if (itemId == 1)
     {
-        menu.addItem(static_cast<int>(i + 1), displayModelName(availableModels_[i]), true, availableModels_[i] == selectedModel_);
+        menu.addItem(1, "No ready models for this target", false, false);
     }
 
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetComponent(&modelButton_),
-        [this](int result)
+        [this, capability](int result)
         {
-            if (result <= 0 || result > static_cast<int>(availableModels_.size()))
+            if (result <= 0)
             {
                 return;
             }
 
-            selectedModel_ = availableModels_[static_cast<std::size_t>(result - 1)];
+            std::vector<std::string> candidateIds;
+            for (const auto& model : modelRegistrySnapshot_.installed)
+            {
+                if ((model.status == moon::engine::ModelStatus::Ready || model.status == moon::engine::ModelStatus::UpdateAvailable)
+                    && std::find(model.capabilities.begin(), model.capabilities.end(), capability) != model.capabilities.end())
+                {
+                    candidateIds.push_back(model.id);
+                }
+            }
+
+            if (result > static_cast<int>(candidateIds.size()) || candidateIds.empty())
+            {
+                return;
+            }
+
+            std::string errorMessage;
+            if (modelSelectionCallback_ && !modelSelectionCallback_(capability, candidateIds[static_cast<std::size_t>(result - 1)], errorMessage))
+            {
+                statusText_ = errorMessage.empty() ? juce::String("Could not select model") : juce::String(errorMessage);
+            }
             refreshControls();
         });
 }
@@ -312,86 +440,173 @@ void AIGenerationPanel::submitCreate()
 
     if (requestLooksEmpty())
     {
-        statusText_ = juce::String("Enter styles or lyrics");
+        statusText_ = "Enter style or notes";
         refreshControls();
         return;
     }
 
-    if (availableModels_.empty())
+    if (activeModelId().empty())
     {
-        statusText_ = juce::String("Acestep unavailable");
+        statusText_ = "Select a ready model first";
         refreshControls();
         return;
     }
 
     if (!createCallback_)
     {
-        statusText_ = juce::String("Music generation callback is not configured");
+        statusText_ = "Generation callback is not configured";
         refreshControls();
         return;
     }
 
-    const auto request = buildRequest();
-    const auto submission = createCallback_(request);
+    const auto submission = createCallback_(buildRequest());
     if (!submission.accepted || submission.jobId.empty())
     {
-        statusText_ = submission.errorMessage.empty() ? juce::String("Music generation could not start") : juce::String(submission.errorMessage);
+        statusText_ = submission.errorMessage.empty() ? juce::String("Generation could not start") : juce::String(submission.errorMessage);
         refreshControls();
         return;
     }
 
     activeJobId_ = submission.jobId;
     generating_ = true;
-    statusText_ = juce::String("Generating...");
+    statusText_ = "Generating...";
     refreshControls();
 }
 
 void AIGenerationPanel::refreshControls()
 {
     expandButton_.setButtonText(expanded_ ? "v" : ">");
-    categoryButton_.setButtonText(categoryLabel());
-    modelButton_.setButtonText(modelLabel());
-    statusLabel_.setText(statusText_, juce::dontSendNotification);
+    targetButton_.setButtonText(currentTargetLabel());
+    deviceButton_.setButtonText(currentDeviceLabel());
+    modelButton_.setButtonText(activeModelLabel());
+    statusLabel_.setText(activeModelStatusLabel().isNotEmpty() ? (activeModelStatusLabel() + "  |  " + statusText_) : statusText_, juce::dontSendNotification);
     createButton_.setButtonText(generating_ ? "Generating..." : "Create");
+    createButton_.setColour(juce::TextButton::buttonColourId, generating_ ? createFillBusy() : createFill());
+    manageModelsButton_.setButtonText(expanded_ ? "Model Manager" : "Models...");
 
-    const bool canCreate = !generating_ && !availableModels_.empty() && !requestLooksEmpty();
+    const bool hasReadyModel = !activeModelId().empty();
+    const bool canCreate = !generating_ && hasReadyModel && !requestLooksEmpty();
     createButton_.setEnabled(canCreate);
-    modelButton_.setEnabled(!availableModels_.empty() && !generating_);
-    categoryButton_.setEnabled(!generating_);
+    modelButton_.setEnabled(!generating_);
+    manageModelsButton_.setEnabled(!generating_);
+    targetButton_.setEnabled(!generating_);
+    deviceButton_.setEnabled(!generating_);
     stylesEditor_.setReadOnly(generating_);
-    lyricsEditor_.setReadOnly(generating_);
+    secondaryEditor_.setReadOnly(generating_);
     repaint();
+}
+
+void AIGenerationPanel::updateSecondaryProfile()
+{
+    const auto& profile = currentTargetProfile();
+    secondaryLabel_.setText(juce::String(std::string(profile.secondaryLabel)), juce::dontSendNotification);
+    secondaryEditor_.setTextToShowWhenEmpty(
+        juce::String(std::string(profile.secondaryPlaceholder)),
+        juce::Colours::white.withAlpha(0.30f));
+}
+
+void AIGenerationPanel::storeSecondaryPromptForCurrentTarget()
+{
+    secondaryPromptByTarget_[selectedTarget_] = secondaryEditor_.getText().toStdString();
+}
+
+void AIGenerationPanel::restoreSecondaryPromptForCurrentTarget()
+{
+    const auto it = secondaryPromptByTarget_.find(selectedTarget_);
+    secondaryEditor_.setText(it == secondaryPromptByTarget_.end() ? juce::String{} : juce::String(it->second), juce::dontSendNotification);
 }
 
 moon::engine::MusicGenerationRequest AIGenerationPanel::buildRequest() const
 {
     moon::engine::MusicGenerationRequest request;
-    request.category = selectedCategory_;
-    request.selectedModel = selectedModel_;
+    request.category = selectedTarget_;
+    request.devicePreference = selectedDevicePreference_;
     request.stylesPrompt = stylesEditor_.getText().trim().toStdString();
-    request.lyricsPrompt = lyricsEditor_.getText().trim().toStdString();
-    request.isInstrumental = request.lyricsPrompt.empty();
+    request.secondaryPrompt = secondaryEditor_.getText().trim().toStdString();
+    request.secondaryPromptIsLyrics = currentTargetProfile().secondaryPromptRepresentsLyrics;
+    request.lyricsPrompt = request.secondaryPromptIsLyrics ? request.secondaryPrompt : std::string{};
+    request.isInstrumental = !request.secondaryPromptIsLyrics || request.secondaryPrompt.empty();
+    request.selectedModel = activeModelId();
+    request.selectedModelDisplayName = activeModelLabel().toStdString();
+    request.selectedModelVersion = activeModelVersion();
+    request.selectedModelPath = activeModelPath();
     return request;
-}
-
-juce::String AIGenerationPanel::categoryLabel() const
-{
-    return juce::String(std::string(moon::engine::musicGenerationCategoryLabel(selectedCategory_)));
-}
-
-juce::String AIGenerationPanel::modelLabel() const
-{
-    if (availableModels_.empty())
-    {
-        return "No model";
-    }
-
-    return selectedModel_.empty() ? displayModelName(availableModels_.front()) : displayModelName(selectedModel_);
 }
 
 bool AIGenerationPanel::requestLooksEmpty() const
 {
-    return stylesEditor_.getText().trim().isEmpty() && lyricsEditor_.getText().trim().isEmpty();
+    return stylesEditor_.getText().trim().isEmpty() && secondaryEditor_.getText().trim().isEmpty();
+}
+
+juce::String AIGenerationPanel::currentTargetLabel() const
+{
+    return juce::String(std::string(moon::engine::musicGenerationCategoryLabel(selectedTarget_)));
+}
+
+juce::String AIGenerationPanel::currentDeviceLabel() const
+{
+    return juce::String(std::string(moon::engine::computeDevicePreferenceLabel(selectedDevicePreference_)));
+}
+
+juce::String AIGenerationPanel::activeModelLabel() const
+{
+    return modelDisplayName(findInstalledModel(modelRegistrySnapshot_, activeModelId()));
+}
+
+juce::String AIGenerationPanel::activeModelStatusLabel() const
+{
+    const auto* model = findInstalledModel(modelRegistrySnapshot_, activeModelId());
+    if (model == nullptr)
+    {
+        return "No model";
+    }
+
+    juce::String text{std::string(moon::engine::modelStatusLabel(model->status))};
+    if (!model->version.empty())
+    {
+        text += "  v";
+        text += juce::String(model->version);
+    }
+    return text;
+}
+
+std::string AIGenerationPanel::activeModelId() const
+{
+    const auto capability = currentCapability();
+    const auto it = modelRegistrySnapshot_.activeBindings.find(capability);
+    if (it == modelRegistrySnapshot_.activeBindings.end())
+    {
+        return {};
+    }
+    return it->second;
+}
+
+std::string AIGenerationPanel::activeModelVersion() const
+{
+    if (const auto* model = findInstalledModel(modelRegistrySnapshot_, activeModelId()))
+    {
+        return model->version;
+    }
+    return {};
+}
+
+std::string AIGenerationPanel::activeModelPath() const
+{
+    if (const auto* model = findInstalledModel(modelRegistrySnapshot_, activeModelId()))
+    {
+        return model->installPath.string();
+    }
+    return {};
+}
+
+moon::engine::ModelCapability AIGenerationPanel::currentCapability() const noexcept
+{
+    return currentTargetProfile().capability;
+}
+
+moon::engine::GenerationTargetProfile AIGenerationPanel::currentTargetProfile() const noexcept
+{
+    return moon::engine::generationTargetProfile(selectedTarget_);
 }
 }
 #endif

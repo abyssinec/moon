@@ -109,6 +109,10 @@ std::string buildMusicPrompt(const MusicGenerationRequest& request)
     {
         prompt << " | vocals";
     }
+    if (!request.secondaryPrompt.empty() && !request.secondaryPromptIsLyrics)
+    {
+        prompt << " | notes: " << request.secondaryPrompt;
+    }
     if (request.bpm > 0.0)
     {
         prompt << " | bpm " << static_cast<int>(std::round(request.bpm));
@@ -118,6 +122,18 @@ std::string buildMusicPrompt(const MusicGenerationRequest& request)
         prompt << " | key " << request.musicalKey;
     }
     return prompt.str();
+}
+
+std::string devicePreferenceValue(ComputeDevicePreference preference)
+{
+    switch (preference)
+    {
+    case ComputeDevicePreference::GPU:  return "gpu";
+    case ComputeDevicePreference::CPU:  return "cpu";
+    case ComputeDevicePreference::Auto: return "auto";
+    }
+
+    return "auto";
 }
 
 std::wstring widen(const std::string& text)
@@ -445,8 +461,9 @@ std::string LocalJobClient::createMusicGenerationJob(const MusicGenerationReques
     const auto prompt = buildMusicPrompt(request);
     const auto cacheKey = FileHash::hashPath(
         std::string(musicGenerationCategoryLabel(request.category))
-        + "|" + request.stylesPrompt + "|" + request.lyricsPrompt + "|"
-        + request.selectedModel + "|" + std::to_string(request.durationSec) + "|" + std::to_string(request.seed));
+        + "|" + request.stylesPrompt + "|" + request.secondaryPrompt + "|" + request.lyricsPrompt + "|"
+        + request.selectedModel + "|" + request.selectedModelVersion + "|" + std::to_string(request.durationSec) + "|"
+        + std::to_string(request.seed) + "|" + devicePreferenceValue(request.devicePreference));
     const auto outputPath = (std::filesystem::path("cache") / (cacheKey + "_music.wav")).string();
 
     LocalJob job;
@@ -585,7 +602,7 @@ void LocalJobClient::runMusicGenerationJob(std::string jobId, MusicGenerationReq
     updateStatus("running", 0.1, "preparing");
     const auto selectedModel = request.selectedModel.empty() ? "ace_step" : request.selectedModel;
     const auto prompt = buildMusicPrompt(request);
-    const auto checkpointPath = trimCopy(envValue("MOON_ACE_STEP_CHECKPOINT_PATH"));
+    const auto checkpointPath = trimCopy(!request.selectedModelPath.empty() ? request.selectedModelPath : envValue("MOON_ACE_STEP_CHECKPOINT_PATH"));
     const auto apiUrl = trimCopy(envValue("MOON_ACE_STEP_API_URL"));
     const auto executable = trimCopy(envValue("MOON_ACE_STEP_EXECUTABLE"));
 
@@ -604,9 +621,12 @@ void LocalJobClient::runMusicGenerationJob(std::string jobId, MusicGenerationReq
                  << "\"output_path\":\"" << jsonEscape(outputAudioPath) << "\","
                  << "\"audio_duration\":" << std::max(1.0, request.durationSec) << ","
                  << "\"prompt\":\"" << jsonEscape(prompt) << "\","
-                 << "\"lyrics\":\"" << jsonEscape(request.isInstrumental ? std::string{} : request.lyricsPrompt) << "\","
-                 << "\"actual_seeds\":[" << request.seed << "]"
-                 << "}";
+                  << "\"lyrics\":\"" << jsonEscape((request.isInstrumental || !request.secondaryPromptIsLyrics) ? std::string{} : request.lyricsPrompt) << "\","
+                  << "\"notes\":\"" << jsonEscape(request.secondaryPromptIsLyrics ? std::string{} : request.secondaryPrompt) << "\","
+                  << "\"model_path\":\"" << jsonEscape(request.selectedModelPath) << "\","
+                  << "\"device\":\"" << jsonEscape(devicePreferenceValue(request.devicePreference)) << "\","
+                  << "\"actual_seeds\":[" << request.seed << "]"
+                  << "}";
             const auto response = httpPost(apiUrl, "/generate", body.str());
             const auto resolvedOutput = response.has_value() ? extractJsonString(*response, "output_audio_path").value_or(outputAudioPath) : outputAudioPath;
             if (!response.has_value() || !std::filesystem::exists(resolvedOutput))
@@ -621,7 +641,15 @@ void LocalJobClient::runMusicGenerationJob(std::string jobId, MusicGenerationReq
         }
         else
         {
-            const auto command = !executable.empty() ? executable : std::string("ace_step");
+            if (executable.empty())
+            {
+                throw std::runtime_error(
+                    checkpointPath.empty()
+                        ? "ACE-Step is not configured. Set MOON_ACE_STEP_API_URL or MOON_ACE_STEP_EXECUTABLE."
+                        : "ACE-Step checkpoint is configured, but no runtime is configured. Set MOON_ACE_STEP_API_URL or MOON_ACE_STEP_EXECUTABLE.");
+            }
+
+            const auto command = executable;
             updateStatus("running", 0.45, "running Acestep");
             std::vector<std::string> arguments{
                 command,
@@ -634,15 +662,22 @@ void LocalJobClient::runMusicGenerationJob(std::string jobId, MusicGenerationReq
                 "--seed",
                 std::to_string(request.seed),
             };
-            if (!checkpointPath.empty())
-            {
-                arguments.emplace_back("--checkpoint");
-                arguments.push_back(checkpointPath);
-            }
-            if (!request.isInstrumental && !request.lyricsPrompt.empty())
+              if (!checkpointPath.empty())
+              {
+                  arguments.emplace_back("--checkpoint");
+                  arguments.push_back(checkpointPath);
+              }
+              arguments.emplace_back("--device");
+              arguments.push_back(devicePreferenceValue(request.devicePreference));
+              if (!request.isInstrumental && request.secondaryPromptIsLyrics && !request.lyricsPrompt.empty())
             {
                 arguments.emplace_back("--lyrics");
                 arguments.push_back(request.lyricsPrompt);
+            }
+            if (!request.secondaryPromptIsLyrics && !request.secondaryPrompt.empty())
+            {
+                arguments.emplace_back("--notes");
+                arguments.push_back(request.secondaryPrompt);
             }
 
 #if MOON_HAS_JUCE
@@ -655,7 +690,7 @@ void LocalJobClient::runMusicGenerationJob(std::string jobId, MusicGenerationReq
 
             if (!process.start(commandLine))
             {
-                throw std::runtime_error("Unable to launch Acestep executable");
+                throw std::runtime_error("Unable to launch Acestep executable: " + command);
             }
 
             if (!process.waitForProcessToFinish(600000))
@@ -705,7 +740,7 @@ ModelsResponse LocalJobClient::detectModels() const
         ;
     const auto executablePath = trimCopy(envValue("MOON_ACE_STEP_EXECUTABLE"));
     const auto checkpointPath = trimCopy(envValue("MOON_ACE_STEP_CHECKPOINT_PATH"));
-    const bool hasAceStepExecutable = !executablePath.empty() || pathLooksUsable(checkpointPath);
+    const bool hasAceStepExecutable = !executablePath.empty();
 
     if (hasAceStepApi)
     {

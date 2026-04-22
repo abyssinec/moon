@@ -1,5 +1,6 @@
 set(MOON_UI_SOURCES
     src/AIGenerationPanel.cpp
+    src/ModelManagerPanel.cpp
     src/TimelineView.cpp
     src/TrackListView.cpp
     src/InspectorPanel.cpp

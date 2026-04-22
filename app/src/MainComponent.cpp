@@ -751,23 +751,38 @@ MainComponent::MainComponent(AppController& controller)
     };
     refreshTimelineTuningWidgets();
 
+    aiGenerationPanel_.setModelSelectionCallback(
+        [this](moon::engine::ModelCapability capability, const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.setActiveGenerationModel(capability, modelId, errorMessage))
+            {
+                return false;
+            }
+
+            refreshAIGenerationPanel();
+            return true;
+        });
+    aiGenerationPanel_.setOpenModelManagerCallback(
+        [this](moon::engine::ModelCapability capability)
+        {
+            openModelManagerForCapability(capability);
+        });
     aiGenerationPanel_.setCreateCallback(
         [this](const moon::engine::MusicGenerationRequest& request)
         {
             const auto stylesPrompt = juce::String(request.stylesPrompt).trim();
-            const auto lyricsPrompt = juce::String(request.lyricsPrompt).trim();
-            if (stylesPrompt.isEmpty() && lyricsPrompt.isEmpty())
+            const auto secondaryPrompt = juce::String(request.secondaryPrompt).trim();
+            if (stylesPrompt.isEmpty() && secondaryPrompt.isEmpty())
             {
-                return moon::ui::MusicGenerationSubmission{false, {}, "Enter styles or lyrics"};
+                return moon::ui::MusicGenerationSubmission{false, {}, "Enter style or notes"};
             }
 
-            const auto models = controller_.availableMusicGenerationModels();
-            if (models.empty())
+            if (request.selectedModel.empty())
             {
                 return moon::ui::MusicGenerationSubmission{
                     false,
                     {},
-                    "Acestep is unavailable. Configure the API URL, executable, or checkpoint first."};
+                    "Select a ready model in the generation panel or model manager first."};
             }
 
             if (const auto jobId = controller_.generateMusic(request); jobId.has_value())
@@ -1485,8 +1500,141 @@ void MainComponent::repaintPlayheadPresentation(double previousPlayheadSec, doub
 
 void MainComponent::refreshAIGenerationPanel()
 {
-    aiGenerationPanel_.setAvailableModels(controller_.availableMusicGenerationModels());
+    aiGenerationPanel_.setModelRegistrySnapshot(controller_.modelRegistrySnapshot());
     aiGenerationPanel_.refreshTaskState(controller_.tasks());
+}
+
+void MainComponent::openModelManagerForCapability(moon::engine::ModelCapability capability)
+{
+    auto* panel = new moon::ui::ModelManagerPanel();
+    panel->setPreferredCapability(capability);
+    panel->setSnapshot(controller_.modelRegistrySnapshot());
+    panel->setRefreshCallback(
+        [this, panel](std::string& errorMessage)
+        {
+            if (!controller_.refreshModelRegistry(&errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setPollCallback(
+        [this, panel](std::string& errorMessage)
+        {
+            const bool changed = controller_.pollModelOperations(&errorMessage);
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return changed;
+        });
+    panel->setSyncRemoteCatalogCallback(
+        [this, panel](std::string& errorMessage)
+        {
+            if (!controller_.syncRemoteModelCatalog(&errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setSetActiveCallback(
+        [this, panel](moon::engine::ModelCapability bindingCapability, const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.setActiveGenerationModel(bindingCapability, modelId, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setDownloadCallback(
+        [this, panel](const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.downloadModel(modelId, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setUpdateCallback(
+        [this, panel](const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.updateModel(modelId, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setVerifyCallback(
+        [this, panel](const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.verifyInstalledModel(modelId, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setRemoveCallback(
+        [this, panel](const std::string& modelId, std::string& errorMessage)
+        {
+            if (!controller_.removeInstalledModel(modelId, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setAddExistingCallback(
+        [this, panel](const std::string& modelId, const std::string& folderPath, std::string& errorMessage)
+        {
+            if (!controller_.addExistingModelFolder(modelId, folderPath, errorMessage))
+            {
+                return false;
+            }
+
+            panel->setSnapshot(controller_.modelRegistrySnapshot());
+            refreshAIGenerationPanel();
+            return true;
+        });
+    panel->setOpenModelsFolderCallback(
+        [this]()
+        {
+            juce::File(controller_.modelsRootDirectory().string()).revealToUser();
+        });
+    panel->setCloseCallback(
+        [this]()
+        {
+            controller_.cancelAllModelOperations();
+            refreshAIGenerationPanel();
+        });
+
+    juce::DialogWindow::LaunchOptions options;
+    panel->setSize(980, 540);
+    options.content.setOwned(panel);
+    options.dialogTitle = "Model Manager";
+    options.dialogBackgroundColour = juce::Colour::fromRGB(13, 16, 21);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.componentToCentreAround = this;
+    options.launchAsync();
 }
 
 void MainComponent::timerCallback()
@@ -1506,6 +1654,10 @@ void MainComponent::timerCallback()
     controller_.refreshPlaybackUiState();
     const auto nextPlayheadSec = controller_.projectManager().state().uiState.playheadSec;
     controller_.maintainPreviewPlayback();
+    if (controller_.pollModelOperations())
+    {
+        refreshAIGenerationPanel();
+    }
     ++taskPollTickCounter_;
     ++autosaveTickCounter_;
 

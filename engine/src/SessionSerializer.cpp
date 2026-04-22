@@ -48,10 +48,14 @@ bool SessionSerializer::save(const ProjectState& state, const std::filesystem::p
         }
         out << "      {\"id\": \"" << escape(id) << "\", \"path\": \"" << escape(makeRelativePath(projectFile, asset.path))
             << "\", \"source_clip_id\": \"" << escape(asset.sourceClipId)
+            << "\", \"model_id\": \"" << escape(asset.modelId)
             << "\", \"model\": \"" << escape(asset.modelName)
+            << "\", \"generation_target\": \"" << escape(asset.generationTarget)
             << "\", \"prompt\": \"" << escape(asset.prompt)
+            << "\", \"secondary_prompt\": \"" << escape(asset.secondaryPrompt)
             << "\", \"created_at\": \"" << escape(asset.createdAt)
-            << "\", \"cache_key\": \"" << escape(asset.cacheKey) << "\"}";
+            << "\", \"cache_key\": \"" << escape(asset.cacheKey)
+            << "\", \"instrumental\": " << (asset.instrumental ? "true" : "false") << "}";
         firstAsset = false;
     }
 
@@ -229,17 +233,33 @@ std::optional<ProjectState> SessionSerializer::load(const std::filesystem::path&
     }
 
     const auto generatedArray = extractArray(content, "generated");
-    const std::regex generatedExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"path\"\\s*:\\s*\"([^\"]*)\",\\s*\"source_clip_id\"\\s*:\\s*\"([^\"]*)\",\\s*\"model\"\\s*:\\s*\"([^\"]*)\",\\s*\"prompt\"\\s*:\\s*\"([^\"]*)\",\\s*\"created_at\"\\s*:\\s*\"([^\"]*)\",\\s*\"cache_key\"\\s*:\\s*\"([^\"]*)\"\\}");
+    const std::regex generatedExpr("\\{\"id\"\\s*:\\s*\"([^\"]+)\",\\s*\"path\"\\s*:\\s*\"([^\"]*)\",\\s*\"source_clip_id\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"model_id\"\\s*:\\s*\"([^\"]*)\")?,\\s*\"model\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"generation_target\"\\s*:\\s*\"([^\"]*)\")?,\\s*\"prompt\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"secondary_prompt\"\\s*:\\s*\"([^\"]*)\")?,\\s*\"created_at\"\\s*:\\s*\"([^\"]*)\",\\s*\"cache_key\"\\s*:\\s*\"([^\"]*)\"(?:,\\s*\"instrumental\"\\s*:\\s*(true|false))?\\}");
     for (std::sregex_iterator it(generatedArray.begin(), generatedArray.end(), generatedExpr), end; it != end; ++it)
     {
         AssetInfo asset;
         asset.id = (*it)[1].str();
         asset.path = makeAbsolutePath(projectFile, (*it)[2].str());
         asset.sourceClipId = (*it)[3].str();
-        asset.modelName = (*it)[4].str();
-        asset.prompt = (*it)[5].str();
-        asset.createdAt = (*it)[6].str();
-        asset.cacheKey = (*it)[7].str();
+        if ((*it)[4].matched)
+        {
+            asset.modelId = (*it)[4].str();
+        }
+        asset.modelName = (*it)[5].str();
+        if ((*it)[6].matched)
+        {
+            asset.generationTarget = (*it)[6].str();
+        }
+        asset.prompt = (*it)[7].str();
+        if ((*it)[8].matched)
+        {
+            asset.secondaryPrompt = (*it)[8].str();
+        }
+        asset.createdAt = (*it)[9].str();
+        asset.cacheKey = (*it)[10].str();
+        if ((*it)[11].matched)
+        {
+            asset.instrumental = ((*it)[11].str() == "true");
+        }
         asset.generated = true;
         state.generatedAssets.emplace(asset.id, asset);
     }

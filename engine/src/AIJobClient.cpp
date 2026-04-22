@@ -108,6 +108,11 @@ std::string buildMusicPrompt(const MusicGenerationRequest& request)
         prompt += ": ";
         prompt += request.stylesPrompt;
     }
+    if (!request.secondaryPrompt.empty() && !request.secondaryPromptIsLyrics)
+    {
+        prompt += " | ";
+        prompt += request.secondaryPrompt;
+    }
     return prompt;
 }
 

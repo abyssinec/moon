@@ -131,6 +131,8 @@ AppController::AppController()
         settings_.backendUrl.empty() ? std::string(AppConfig::backendUrl) : settings_.backendUrl,
         *logger_);
     appendBootstrapTrace("[bootstrap] ai job client created");
+    modelManager_ = std::make_unique<moon::engine::ModelManager>(*logger_);
+    appendBootstrapTrace("[bootstrap] model manager created");
     taskManager_ = std::make_unique<moon::engine::TaskManager>(*aiJobClient_, *logger_);
     appendBootstrapTrace("[bootstrap] task manager created");
 
@@ -159,6 +161,7 @@ bool AppController::startup()
         logger_->info("Created default startup project at " + defaultRoot);
     }
 
+    refreshModelRegistry();
     refreshBackendStatus();
     logger_->info("Startup completed without blocking backend probe");
     return true;
@@ -417,30 +420,53 @@ bool AppController::addGeneratedLayer(const std::string& prompt)
 std::optional<std::string> AppController::generateMusic(const moon::engine::MusicGenerationRequest& request)
 {
     const auto stylesPrompt = trimCopy(request.stylesPrompt);
-    const auto lyricsPrompt = trimCopy(request.lyricsPrompt);
-    if (stylesPrompt.empty() && lyricsPrompt.empty())
+    const auto secondaryPrompt = trimCopy(request.secondaryPrompt.empty() ? request.lyricsPrompt : request.secondaryPrompt);
+    if (stylesPrompt.empty() && secondaryPrompt.empty())
     {
-        logger_->error("Music generation requested with empty styles and lyrics");
-        return std::nullopt;
-    }
-
-    const auto models = availableMusicGenerationModels();
-    if (models.empty())
-    {
-        logger_->error("Acestep music generation is unavailable");
+        logger_->error("Music generation requested with empty prompts");
         return std::nullopt;
     }
 
     auto queuedRequest = request;
     queuedRequest.stylesPrompt = stylesPrompt;
-    queuedRequest.lyricsPrompt = lyricsPrompt;
-    queuedRequest.isInstrumental = lyricsPrompt.empty();
-    if (queuedRequest.selectedModel.empty())
+    queuedRequest.secondaryPrompt = secondaryPrompt;
+    queuedRequest.secondaryPromptIsLyrics = moon::engine::generationTargetProfile(queuedRequest.category).secondaryPromptRepresentsLyrics;
+    queuedRequest.lyricsPrompt = queuedRequest.secondaryPromptIsLyrics ? secondaryPrompt : std::string{};
+    queuedRequest.isInstrumental = !queuedRequest.secondaryPromptIsLyrics || secondaryPrompt.empty();
+
+    if (modelManager_ == nullptr)
     {
-        queuedRequest.selectedModel = models.front();
+        logger_->error("Model manager is unavailable");
+        return std::nullopt;
     }
 
+    const auto capability = moon::engine::generationTargetCapability(queuedRequest.category);
+    std::optional<moon::engine::ResolvedModelInfo> resolvedModel;
+    if (!queuedRequest.selectedModel.empty())
+    {
+        resolvedModel = modelManager_->resolveInstalledModel(queuedRequest.selectedModel);
+    }
+    else
+    {
+        resolvedModel = modelManager_->resolveActiveModel(capability);
+    }
+
+    if (!resolvedModel.has_value())
+    {
+        logger_->error("No ready model is selected for generation capability");
+        return std::nullopt;
+    }
+
+    queuedRequest.selectedModel = resolvedModel->id;
+    queuedRequest.selectedModelDisplayName = resolvedModel->displayName;
+    queuedRequest.selectedModelVersion = resolvedModel->version;
+    queuedRequest.selectedModelPath = resolvedModel->installPath.string();
+
     auto& state = projectManager_->state();
+    if (queuedRequest.bpm <= 0.0)
+    {
+        queuedRequest.bpm = state.tempo;
+    }
     const auto startSec = std::max(0.0, state.uiState.playheadSec);
     std::string targetTrackId;
     if (!state.uiState.selectedTrackId.empty())
@@ -458,7 +484,7 @@ std::optional<std::string> AppController::generateMusic(const moon::engine::Musi
         }
     }
 
-    const auto preferredTrackName = "Generated " + std::string(moon::engine::musicGenerationCategoryLabel(queuedRequest.category));
+    const auto preferredTrackName = std::string(moon::engine::generationTargetProfile(queuedRequest.category).suggestedTrackName);
     const auto jobId = taskManager_->queueMusicGeneration(queuedRequest, targetTrackId, preferredTrackName, startSec);
     markProjectDirty();
     return jobId;
@@ -1466,7 +1492,157 @@ bool AppController::setProjectTimeSignature(int numerator, int denominator)
 
 std::vector<std::string> AppController::availableMusicGenerationModels() const
 {
-    return backendModels_.musicGeneration;
+    std::vector<std::string> models;
+    for (const auto& item : modelRegistrySnapshot_.installed)
+    {
+        if (item.status == moon::engine::ModelStatus::Ready || item.status == moon::engine::ModelStatus::UpdateAvailable)
+        {
+            models.push_back(item.id);
+        }
+    }
+    return models;
+}
+
+bool AppController::refreshModelRegistry(std::string* errorMessage)
+{
+    if (modelManager_ == nullptr)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "Model manager is unavailable";
+        }
+        return false;
+    }
+
+    if (!modelManager_->refresh(errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::syncRemoteModelCatalog(std::string* errorMessage)
+{
+    if (modelManager_ == nullptr)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "Model manager is unavailable";
+        }
+        return false;
+    }
+
+    if (!modelManager_->syncRemoteCatalog(errorMessage))
+    {
+        return false;
+    }
+
+    return refreshModelRegistry(errorMessage);
+}
+
+bool AppController::pollModelOperations(std::string* errorMessage)
+{
+    if (modelManager_ == nullptr)
+    {
+        return false;
+    }
+
+    if (!modelManager_->pollOperations(errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::setActiveGenerationModel(moon::engine::ModelCapability capability, const std::string& modelId, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->setActiveModel(capability, modelId, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::addExistingModelFolder(const std::string& modelId, const std::filesystem::path& folderPath, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->addExistingModelFolder(modelId, folderPath, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::verifyInstalledModel(const std::string& modelId, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->verifyModel(modelId, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::removeInstalledModel(const std::string& modelId, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->removeModel(modelId, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::downloadModel(const std::string& modelId, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->downloadModel(modelId, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::updateModel(const std::string& modelId, std::string& errorMessage)
+{
+    if (modelManager_ == nullptr || !modelManager_->updateModel(modelId, errorMessage))
+    {
+        return false;
+    }
+
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return true;
+}
+
+bool AppController::cancelAllModelOperations(std::string* errorMessage)
+{
+    if (modelManager_ == nullptr)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "Model manager is unavailable";
+        }
+        return false;
+    }
+
+    const bool changed = modelManager_->cancelAllModelOperations(errorMessage);
+    modelRegistrySnapshot_ = modelManager_->snapshot();
+    return changed;
+}
+
+std::filesystem::path AppController::modelsRootDirectory() const
+{
+    return modelManager_ != nullptr ? modelManager_->rootPath() : (std::filesystem::path("data") / "models");
 }
 
 bool AppController::canCloseSafely() const
