@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <future>
 #include <mutex>
 
@@ -95,6 +96,7 @@ private:
     Logger& logger_;
     std::unordered_map<std::string, TaskInfo> tasks_;
     std::unordered_map<std::string, PendingInsertion> pendingInsertions_;
+    std::unordered_set<std::string> completedResultsHandled_;
     std::future<PollBatchResult> pollFuture_;
     bool pollInFlight_{false};
     mutable std::mutex clientMutex_;

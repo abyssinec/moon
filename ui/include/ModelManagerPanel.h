@@ -107,8 +107,6 @@ private:
     juce::Label selectedOperationLabel_;
     juce::ProgressBar selectedOperationProgressBar_{selectedOperationProgress_};
     juce::TextEditor detailsEditor_;
-    juce::TextButton refreshButton_{"Refresh"};
-    juce::TextButton syncRemoteButton_{"Sync HF"};
     juce::TextButton setActiveButton_{"Set Active"};
     juce::TextButton downloadButton_{"Download"};
     juce::TextButton updateButton_{"Update"};

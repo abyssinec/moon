@@ -44,7 +44,7 @@ void styleCombo(juce::ComboBox& combo)
 
 ModelManagerPanel::ModelManagerPanel()
 {
-    for (auto* button : {&installedTab_, &availableTab_, &localTab_, &refreshButton_, &syncRemoteButton_, &setActiveButton_, &downloadButton_, &updateButton_, &verifyButton_, &removeButton_, &addExistingButton_, &openFolderButton_})
+    for (auto* button : {&installedTab_, &availableTab_, &localTab_, &setActiveButton_, &downloadButton_, &updateButton_, &verifyButton_, &removeButton_, &addExistingButton_, &openFolderButton_})
     {
         addAndMakeVisible(button);
         styleButton(*button, button == &setActiveButton_ || button == &downloadButton_);
@@ -102,24 +102,6 @@ ModelManagerPanel::ModelManagerPanel()
     installedTab_.onClick = [this] { setSection(Section::Installed); };
     availableTab_.onClick = [this] { setSection(Section::Available); };
     localTab_.onClick = [this] { setSection(Section::Local); };
-    refreshButton_.onClick = [this]
-    {
-        runAction(
-            [this](std::string& errorMessage)
-            {
-                return refreshCallback_ ? refreshCallback_(errorMessage) : false;
-            },
-            "Model registry refreshed");
-    };
-    syncRemoteButton_.onClick = [this]
-    {
-        runAction(
-            [this](std::string& errorMessage)
-            {
-                return syncRemoteCatalogCallback_ ? syncRemoteCatalogCallback_(errorMessage) : false;
-            },
-            "Hugging Face catalog synced");
-    };
     setActiveButton_.onClick = [this]
     {
         const auto modelId = selectedModelId();
@@ -322,8 +304,6 @@ void ModelManagerPanel::resized()
         buttonRow.removeFromLeft(6);
     };
 
-    placeButton(refreshButton_, 82);
-    placeButton(syncRemoteButton_, 76);
     placeButton(setActiveButton_, 92);
     placeButton(downloadButton_, 90);
     placeButton(updateButton_, 82);
@@ -486,6 +466,35 @@ void ModelManagerPanel::setSection(Section section)
 {
     const auto preferredModelId = selectedModelId();
     activeSection_ = section;
+
+    if (section == Section::Available)
+    {
+        if (syncRemoteCatalogCallback_)
+        {
+            std::string syncError;
+            if (!syncRemoteCatalogCallback_(syncError) && !syncError.empty())
+            {
+                statusLabel_.setText(juce::String(syncError), juce::dontSendNotification);
+            }
+        }
+        if (refreshCallback_)
+        {
+            std::string refreshError;
+            if (!refreshCallback_(refreshError) && !refreshError.empty())
+            {
+                statusLabel_.setText(juce::String(refreshError), juce::dontSendNotification);
+            }
+        }
+    }
+    else if (refreshCallback_)
+    {
+        std::string refreshError;
+        if (!refreshCallback_(refreshError) && !refreshError.empty())
+        {
+            statusLabel_.setText(juce::String(refreshError), juce::dontSendNotification);
+        }
+    }
+
     installedTab_.setToggleState(section == Section::Installed, juce::dontSendNotification);
     availableTab_.setToggleState(section == Section::Available, juce::dontSendNotification);
     localTab_.setToggleState(section == Section::Local, juce::dontSendNotification);
@@ -533,8 +542,6 @@ void ModelManagerPanel::refreshDetails()
         }
     }
 
-    refreshButton_.setVisible(true);
-    syncRemoteButton_.setVisible(activeSection_ == Section::Available);
     setActiveButton_.setVisible(installedSection);
     downloadButton_.setVisible(availableSection);
     updateButton_.setVisible(false);
@@ -544,7 +551,6 @@ void ModelManagerPanel::refreshDetails()
     openFolderButton_.setVisible(true);
 
     addExistingButton_.setButtonText(localSection ? "Use Local Model" : "Add Existing...");
-    syncRemoteButton_.setEnabled(true);
     setActiveButton_.setEnabled(hasModel && installedSection);
     downloadButton_.setEnabled(hasModel && availableSection && selectedAvailableModelCanDownload);
     updateButton_.setEnabled(hasModel && installedSection);

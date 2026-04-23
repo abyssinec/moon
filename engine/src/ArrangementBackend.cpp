@@ -120,7 +120,7 @@ public:
         clip.durationSec = durationSec;
         state.clips.push_back(clip);
         selectClip(state, clip.id);
-        logger_.info("Inserted generated clip " + clip.id + " on " + trackId);
+        logger_.info("Inserted generated clip " + clip.id + " on " + trackId + " asset=" + asset.id + " path=" + audioPath);
         return clip.id;
     }
 

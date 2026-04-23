@@ -623,7 +623,7 @@ MainComponent::MainComponent(AppController& controller)
                   return;
               }
               controller.pollTasks();
-              showOperationInfo("Rewrite Region", "Rewrite job queued. Progress will appear in the task panel.");
+              showOperationInfo("Rewrite Region", "Rewrite job queued. Progress will continue in the editor.");
           },
           [this, &controller](const std::string& prompt)
           {
@@ -634,7 +634,7 @@ MainComponent::MainComponent(AppController& controller)
                   return;
               }
               controller.pollTasks();
-              showOperationInfo("Add Layer", "Add-layer job queued. Progress will appear in the task panel.");
+              showOperationInfo("Add Layer", "Add-layer job queued. Progress will continue in the editor.");
           },
           [this, &controller]
           {
@@ -645,7 +645,7 @@ MainComponent::MainComponent(AppController& controller)
                   return;
               }
               controller.pollTasks();
-              showOperationInfo("Separate Stems", "Stem separation job queued. Progress will appear in the task panel.");
+              showOperationInfo("Separate Stems", "Stem separation job queued. Progress will continue in the editor.");
           })
     , taskPanel_(controller.tasks(), controller.logger())
 {
@@ -697,9 +697,6 @@ MainComponent::MainComponent(AppController& controller)
     inspectorViewport_.setViewedComponent(&inspectorPanel_, false);
     inspectorViewport_.setScrollBarsShown(true, false);
     addAndMakeVisible(inspectorViewport_);
-    taskViewport_.setViewedComponent(&taskPanel_, false);
-    taskViewport_.setScrollBarsShown(true, true);
-    addAndMakeVisible(taskViewport_);
 
     auto styleViewportScrollbars = [](juce::Viewport& viewport)
     {
@@ -718,7 +715,6 @@ MainComponent::MainComponent(AppController& controller)
     styleViewportScrollbars(trackListViewport_);
     styleViewportScrollbars(timelineViewport_);
     styleViewportScrollbars(inspectorViewport_);
-    styleViewportScrollbars(taskViewport_);
 
     auto styleToolbarButton = [](juce::TextButton& button)
     {
@@ -981,9 +977,7 @@ void MainComponent::resized()
     }
 
     auto transport = area.removeFromTop(66);
-    auto bottomArea = area.removeFromBottom(aiGenerationPanel_.preferredHeight() + 82);
-    auto aiPanelArea = bottomArea.removeFromTop(aiGenerationPanel_.preferredHeight());
-    auto taskArea = bottomArea;
+    auto aiPanelArea = area.removeFromBottom(aiGenerationPanel_.preferredHeight());
     auto inspector = area.removeFromRight(378);
     auto tracks = area.removeFromLeft(198);
 
@@ -1022,10 +1016,6 @@ void MainComponent::resized()
 
     inspectorViewport_.setBounds(inspector.reduced(4));
     inspectorPanel_.setSize(juce::jmax(340, inspectorViewport_.getWidth()), 1240);
-
-    taskViewport_.setBounds(taskArea.reduced(4));
-    lastTaskPanelContentWidth_ = juce::jmax(320, taskViewport_.getWidth() - 14);
-    taskPanel_.updateContentSize(lastTaskPanelContentWidth_);
 }
 
 bool MainComponent::isInterestedInFileDrag(const juce::StringArray& files)
@@ -1830,18 +1820,8 @@ void MainComponent::timerCallback()
 
     if (shouldPollTasks)
     {
-        const auto currentTaskPanelWidth = juce::jmax(320, taskViewport_.getWidth() - 14);
-        if (currentTaskPanelWidth != lastTaskPanelContentWidth_)
-        {
-            lastTaskPanelContentWidth_ = currentTaskPanelWidth;
-            taskPanel_.updateContentSize(lastTaskPanelContentWidth_);
-        }
         refreshActionAvailability();
         refreshProjectStatusLabel();
-        if (taskStateChanged || controller_.tasks().activeTaskCount() > 0)
-        {
-            taskPanel_.repaint();
-        }
     }
 }
 

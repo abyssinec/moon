@@ -1,4 +1,4 @@
-#include "TaskManager.h"
+﻿#include "TaskManager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -196,7 +196,14 @@ std::string TaskManager::queueRewrite(const std::string& sourceClipId,
                                       const std::string& prompt)
 {
     std::lock_guard<std::mutex> lock(clientMutex_);
-    const auto jobId = client_.createRewriteJob(inputAudioPath, prompt, "ace_step_stub", durationSec);
+    const auto jobId = client_.createRewriteJob(inputAudioPath, prompt, "ace_step", durationSec);
+    if (jobId.empty())
+    {
+        const auto failedId = "rewrite-submit-failed-" + std::to_string(tasks_.size() + 1);
+        upsertTask(TaskInfo{failedId, "rewrite", "failed", 1.0, "Rewrite backend is unavailable"});
+        logger_.error("Rewrite request was rejected because backend job could not be created");
+        return {};
+    }
     pendingInsertions_[jobId] = PendingInsertion{jobId, "rewrite", sourceClipId, startSec, durationSec, prompt};
     upsertTask(TaskInfo{jobId, "rewrite", "queued", 0.0, "Queued rewrite"});
     return jobId;
@@ -209,7 +216,14 @@ std::string TaskManager::queueAddLayer(const std::string& sourceClipId,
                                        const std::string& prompt)
 {
     std::lock_guard<std::mutex> lock(clientMutex_);
-    const auto jobId = client_.createAddLayerJob(inputAudioPath, prompt, "ace_step_stub", durationSec);
+    const auto jobId = client_.createAddLayerJob(inputAudioPath, prompt, "ace_step", durationSec);
+    if (jobId.empty())
+    {
+        const auto failedId = "add-layer-submit-failed-" + std::to_string(tasks_.size() + 1);
+        upsertTask(TaskInfo{failedId, "add-layer", "failed", 1.0, "Add-layer backend is unavailable"});
+        logger_.error("Add-layer request was rejected because backend job could not be created");
+        return {};
+    }
     pendingInsertions_[jobId] = PendingInsertion{jobId, "add-layer", sourceClipId, startSec, durationSec, prompt};
     upsertTask(TaskInfo{jobId, "add-layer", "queued", 0.0, "Queued generated layer"});
     return jobId;
@@ -222,6 +236,14 @@ std::string TaskManager::queueMusicGeneration(const MusicGenerationRequest& requ
 {
     std::lock_guard<std::mutex> lock(clientMutex_);
     const auto jobId = client_.createMusicGenerationJob(request);
+    if (jobId.empty())
+    {
+        const auto failedId = "music-generation-submit-failed-" + std::to_string(tasks_.size() + 1);
+        upsertTask(TaskInfo{failedId, "music-generation", "failed", 1.0, "Music generation backend is unavailable"});
+        logger_.error("Music generation request was rejected because backend job could not be created");
+        return {};
+    }
+
     pendingInsertions_[jobId] = PendingInsertion{
         jobId,
         "music-generation",
@@ -359,7 +381,7 @@ bool TaskManager::applyCompletedJobResult(const PendingInsertion& pending,
             pending.startSec,
             pending.durationSec > 0.0 ? pending.durationSec : 10.0,
             pending.sourceClipId,
-            "ace_step_stub",
+            "ace_step",
             pending.prompt,
             FileHash::hashPath(result.outputAudioPath));
         std::string takeGroupId = pending.sourceClipId;
@@ -400,7 +422,7 @@ bool TaskManager::applyCompletedJobResult(const PendingInsertion& pending,
             pending.startSec,
             pending.durationSec > 0.0 ? pending.durationSec : 10.0,
             pending.sourceClipId,
-            "ace_step_stub",
+            "ace_step",
             pending.prompt,
             FileHash::hashPath(result.outputAudioPath));
         return true;
@@ -408,12 +430,26 @@ bool TaskManager::applyCompletedJobResult(const PendingInsertion& pending,
 
     if (pending.jobType == "music-generation")
     {
+        logger_.info("Completed music-generation result received for " + pending.jobId);
+        if (!result.outputAudioPath.empty())
+        {
+            logger_.info("Extracted generated audio path for " + pending.jobId + ": " + result.outputAudioPath);
+        }
+        else
+        {
+            logger_.warning("Music generation result payload missing audio path for " + pending.jobId);
+        }
+
         if (result.outputAudioPath.empty() || !std::filesystem::exists(result.outputAudioPath))
         {
+            const auto existence = result.outputAudioPath.empty() ? std::string("empty path") : std::string("missing file");
             upsertTask(TaskInfo{pending.jobId, "music-generation", "failed", 1.0, "Generated audio file not found"});
-            logger_.error("Music generation output missing for " + pending.jobId);
+            logger_.error("Music generation completed but output file missing for " + pending.jobId + ": " + existence
+                + (result.outputAudioPath.empty() ? std::string{} : (" path=" + result.outputAudioPath)));
             return true;
         }
+
+        logger_.info("Music generation output file exists for " + pending.jobId + ": " + result.outputAudioPath);
 
         std::string trackId = pending.targetTrackId;
         const auto trackIt = std::find_if(
@@ -439,6 +475,13 @@ bool TaskManager::applyCompletedJobResult(const PendingInsertion& pending,
             pending.musicRequest.stylesPrompt + (pending.musicRequest.secondaryPrompt.empty() ? "" : (" | " + pending.musicRequest.secondaryPrompt)),
             FileHash::hashPath(result.outputAudioPath));
 
+        if (clipId.empty())
+        {
+            upsertTask(TaskInfo{pending.jobId, "music-generation", "failed", 1.0, "Generated clip could not be inserted"});
+            logger_.error("Music generation clip insertion failed for " + pending.jobId + " on track " + trackId);
+            return true;
+        }
+
         for (const auto& clip : state.clips)
         {
             if (clip.id != clipId)
@@ -456,12 +499,14 @@ bool TaskManager::applyCompletedJobResult(const PendingInsertion& pending,
                 assetIt->second.prompt = pending.musicRequest.stylesPrompt;
                 assetIt->second.secondaryPrompt = pending.musicRequest.secondaryPrompt;
                 assetIt->second.instrumental = pending.musicRequest.isInstrumental;
+                logger_.info("Registered generated asset " + assetIt->second.id + " for " + pending.jobId + " path=" + assetIt->second.path);
             }
             break;
         }
         timeline.selectTrack(state, trackId);
         timeline.selectClip(state, clipId);
         state.uiState.playheadSec = pending.startSec;
+        logger_.info("Inserted generated clip " + clipId + " into track " + trackId + " for " + pending.jobId);
         return true;
     }
 
@@ -496,6 +541,24 @@ bool TaskManager::consumePollBatch(ProjectState& state, TimelineFacade& timeline
             taskInfo.message = polled.errorMessage;
         }
 
+        const auto pendingIt = pendingInsertions_.find(polled.jobId);
+        const bool awaitingCompletedPayload =
+            pendingIt != pendingInsertions_.end()
+            && polled.status.status == "completed"
+            && (!polled.result.has_value()
+                || (pendingIt->second.jobType == "music-generation" && polled.result->outputAudioPath.empty())
+                || (pendingIt->second.jobType == "stems" && polled.result->outputs.empty()));
+        if (awaitingCompletedPayload)
+        {
+            taskInfo.status = "running";
+            taskInfo.progress = std::max(taskInfo.progress, 0.96);
+            taskInfo.message = "Importing generated audio";
+            logger_.warning("Job " + polled.jobId + " reported completed but result payload is not ready yet");
+        }
+
+        logger_.info("Job status polled: " + polled.jobId + " status=" + taskInfo.status + " progress=" + std::to_string(taskInfo.progress)
+            + (taskInfo.message.empty() ? std::string{} : (" message=" + taskInfo.message)));
+
         const auto existing = tasks_.find(taskInfo.id);
         const bool taskChanged = existing == tasks_.end()
             || existing->second.status != taskInfo.status
@@ -504,11 +567,12 @@ bool TaskManager::consumePollBatch(ProjectState& state, TimelineFacade& timeline
         upsertTask(taskInfo);
         changed = changed || taskChanged;
 
-        if (polled.status.status == "completed" && polled.result.has_value())
+        if (!awaitingCompletedPayload && polled.status.status == "completed" && polled.result.has_value())
         {
-            if (const auto pendingIt = pendingInsertions_.find(polled.jobId); pendingIt != pendingInsertions_.end())
+            if (pendingIt != pendingInsertions_.end())
             {
                 changed = applyCompletedJobResult(pendingIt->second, *polled.result, state, timeline) || changed;
+                completedResultsHandled_.insert(polled.jobId);
                 logger_.info("Applied completed task result for " + polled.jobId);
             }
         }
@@ -528,8 +592,12 @@ bool TaskManager::poll(ProjectState& state, TimelineFacade& timeline)
     for (auto it = pendingInsertions_.begin(); it != pendingInsertions_.end();)
     {
         const auto taskIt = tasks_.find(it->first);
-        if (taskIt != tasks_.end() && (taskIt->second.status == "completed" || taskIt->second.status == "failed" || taskIt->second.status == "cancelled"))
+        const bool terminal = taskIt != tasks_.end()
+            && (taskIt->second.status == "completed" || taskIt->second.status == "failed" || taskIt->second.status == "cancelled");
+        const bool completedHandled = completedResultsHandled_.find(it->first) != completedResultsHandled_.end();
+        if (terminal && (taskIt->second.status != "completed" || completedHandled))
         {
+            completedResultsHandled_.erase(it->first);
             it = pendingInsertions_.erase(it);
         }
         else

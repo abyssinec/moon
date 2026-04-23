@@ -24,6 +24,40 @@ namespace moon::engine
 {
 namespace
 {
+std::string unescapeJsonString(const std::string& text)
+{
+    std::string result;
+    result.reserve(text.size());
+
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        const auto ch = text[i];
+        if (ch != '\\' || i + 1 >= text.size())
+        {
+            result.push_back(ch);
+            continue;
+        }
+
+        const auto escaped = text[++i];
+        switch (escaped)
+        {
+        case '\\': result.push_back('\\'); break;
+        case '"':  result.push_back('"'); break;
+        case '/':  result.push_back('/'); break;
+        case 'b':  result.push_back('\b'); break;
+        case 'f':  result.push_back('\f'); break;
+        case 'n':  result.push_back('\n'); break;
+        case 'r':  result.push_back('\r'); break;
+        case 't':  result.push_back('\t'); break;
+        default:
+            result.push_back(escaped);
+            break;
+        }
+    }
+
+    return result;
+}
+
 void writeStubWav(const std::filesystem::path& outputPath, double durationSec)
 {
     std::filesystem::create_directories(outputPath.parent_path());
@@ -227,27 +261,20 @@ ModelsResponse AIJobClient::models() const
         {
             result.stems.push_back("demucs");
         }
-        if (response->find("ace_step_stub") != std::string::npos)
-        {
-            result.rewrite.push_back("ace_step_stub");
-            result.addLayer.push_back("ace_step_stub");
-        }
         if (response->find("ace_step") != std::string::npos)
         {
+            result.rewrite.push_back("ace_step");
+            result.addLayer.push_back("ace_step");
             result.musicGeneration.push_back("ace_step");
         }
-        else if (response->find("ace_step_stub") != std::string::npos)
-        {
-            result.musicGeneration.push_back("ace_step_stub");
-        }
-        if (!result.stems.empty() || !result.rewrite.empty() || !result.addLayer.empty())
+        if (!result.stems.empty() || !result.rewrite.empty() || !result.addLayer.empty() || !result.musicGeneration.empty())
         {
             return result;
         }
     }
 
     markBackendFallback();
-    return ModelsResponse{{"demucs"}, {"ace_step_stub"}, {"ace_step_stub"}, {"ace_step_stub"}};
+    return ModelsResponse{{}, {}, {}, {}};
 }
 
 std::string AIJobClient::createStemsJob(const std::string& inputAudioPath, const std::string& modelName)
@@ -290,7 +317,8 @@ std::string AIJobClient::createRewriteJob(const std::string& inputAudioPath,
     }
 
     markBackendFallback();
-    return createJob("rewrite", inputAudioPath, modelName, prompt, durationSec);
+    logger_.error("Rewrite backend request failed; refusing to create silent stub job");
+    return {};
 }
 
 std::string AIJobClient::createAddLayerJob(const std::string& inputAudioPath,
@@ -315,7 +343,8 @@ std::string AIJobClient::createAddLayerJob(const std::string& inputAudioPath,
     }
 
     markBackendFallback();
-    return createJob("add-layer", inputAudioPath, modelName, prompt, durationSec);
+    logger_.error("Add-layer backend request failed; refusing to create silent stub job");
+    return {};
 }
 
 std::string AIJobClient::createMusicGenerationJob(const MusicGenerationRequest& request)
@@ -347,7 +376,8 @@ std::string AIJobClient::createMusicGenerationJob(const MusicGenerationRequest& 
     }
 
     markBackendFallback();
-    return createJob("music-generation", "", request.selectedModel.empty() ? "ace_step_stub" : request.selectedModel, prompt, request.durationSec);
+    logger_.error("Music generation backend request failed; refusing to create silent stub job");
+    return {};
 }
 
 JobStatusResponse AIJobClient::getJob(const std::string& jobId)
@@ -355,6 +385,11 @@ JobStatusResponse AIJobClient::getJob(const std::string& jobId)
     if (const auto response = httpGet("/jobs/" + jobId); response.has_value())
     {
         markBackendReachable();
+        if (response->find("\"detail\":\"job not found\"") != std::string::npos
+            || response->find("\"detail\": \"job not found\"") != std::string::npos)
+        {
+            return JobStatusResponse{jobId, "unknown", "failed", 1.0, "job not found"};
+        }
         JobStatusResponse status;
         status.id = extractJsonString(*response, "id").value_or(jobId);
         status.type = extractJsonString(*response, "type").value_or("unknown");
@@ -367,7 +402,8 @@ JobStatusResponse AIJobClient::getJob(const std::string& jobId)
     auto it = jobs_.find(jobId);
     if (it == jobs_.end())
     {
-        return JobStatusResponse{jobId, "unknown", "failed", 1.0, "job not found"};
+        markBackendFallback();
+        return JobStatusResponse{jobId, "unknown", "running", 0.0, "Waiting for backend..."};
     }
 
     markBackendFallback();
@@ -394,11 +430,31 @@ JobResultResponse AIJobClient::getJobResult(const std::string& jobId) const
     if (const auto response = httpGet("/jobs/" + jobId + "/result"); response.has_value())
     {
         markBackendReachable();
+        if (response->find("\"detail\":\"job not found\"") != std::string::npos
+            || response->find("\"detail\": \"job not found\"") != std::string::npos)
+        {
+            return JobResultResponse{jobId, "failed", {}, {}};
+        }
         JobResultResponse result;
         result.id = extractJsonString(*response, "id").value_or(jobId);
         result.status = extractJsonString(*response, "status").value_or("completed");
-        result.outputAudioPath = extractJsonString(*response, "output_audio_path").value_or("");
+        result.outputAudioPath = extractJsonString(*response, "output_audio_path")
+            .value_or(extractJsonString(*response, "output_path")
+            .value_or(extractJsonString(*response, "audio_path")
+            .value_or(extractJsonString(*response, "generated_asset_path").value_or(""))));
         result.outputs = extractJsonObjectStrings(*response, "outputs");
+        if (!result.outputAudioPath.empty())
+        {
+            logger_.info("Music generation completed; backend output path: " + result.outputAudioPath);
+        }
+        else if (!result.outputs.empty())
+        {
+            logger_.info("Completed backend result received for " + jobId + " with " + std::to_string(result.outputs.size()) + " output entries");
+        }
+        else
+        {
+            logger_.warning("Completed backend result payload missing audio path for " + jobId);
+        }
         return result;
     }
 
@@ -454,7 +510,7 @@ std::optional<std::string> AIJobClient::httpGet(const std::string& path) const
         return std::nullopt;
     }
 
-    WinHttpSetTimeouts(session, 250, 250, 500, 500);
+    WinHttpSetTimeouts(session, 3000, 3000, 15000, 15000);
 
     HINTERNET connection = WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0);
     if (connection == nullptr)
@@ -535,7 +591,7 @@ std::optional<std::string> AIJobClient::httpPost(const std::string& path, const 
         return std::nullopt;
     }
 
-    WinHttpSetTimeouts(session, 250, 250, 500, 500);
+    WinHttpSetTimeouts(session, 3000, 3000, 15000, 15000);
 
     HINTERNET connection = WinHttpConnect(session, endpoint.host.c_str(), endpoint.port, 0);
     if (connection == nullptr)
@@ -608,12 +664,52 @@ std::optional<std::string> AIJobClient::httpPost(const std::string& path, const 
 
 std::optional<std::string> AIJobClient::extractJsonString(const std::string& json, const std::string& key)
 {
-    const std::regex expr("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
-    std::smatch match;
-    if (std::regex_search(json, match, expr) && match.size() > 1)
+    const auto keyPos = json.find("\"" + key + "\"");
+    if (keyPos == std::string::npos)
     {
-        return match[1].str();
+        return std::nullopt;
     }
+
+    auto colonPos = json.find(':', keyPos);
+    if (colonPos == std::string::npos)
+    {
+        return std::nullopt;
+    }
+
+    auto valuePos = json.find('"', colonPos);
+    if (valuePos == std::string::npos)
+    {
+        return std::nullopt;
+    }
+
+    ++valuePos;
+    std::string encoded;
+    bool escaped = false;
+    for (std::size_t i = valuePos; i < json.size(); ++i)
+    {
+        const auto ch = json[i];
+        if (escaped)
+        {
+            encoded.push_back('\\');
+            encoded.push_back(ch);
+            escaped = false;
+            continue;
+        }
+
+        if (ch == '\\')
+        {
+            escaped = true;
+            continue;
+        }
+
+        if (ch == '"')
+        {
+            return unescapeJsonString(encoded);
+        }
+
+        encoded.push_back(ch);
+    }
+
     return std::nullopt;
 }
 

@@ -672,6 +672,23 @@ std::vector<std::string> extractRepoSiblingPaths(const std::string& content)
     return siblings;
 }
 
+std::map<std::string, std::uint64_t> extractRepoSiblingSizes(const std::string& content)
+{
+    std::map<std::string, std::uint64_t> sizes;
+    const std::regex expr("\\{[^\\{\\}]*\"rfilename\"\\s*:\\s*\"([^\"]+)\"[^\\{\\}]*\"size\"\\s*:\\s*([0-9]+)[^\\{\\}]*\\}");
+    for (std::sregex_iterator it(content.begin(), content.end(), expr), finish; it != finish; ++it)
+    {
+        try
+        {
+            sizes[(*it)[1].str()] = static_cast<std::uint64_t>(std::stoull((*it)[2].str()));
+        }
+        catch (...)
+        {
+        }
+    }
+    return sizes;
+}
+
 std::vector<std::string> extractRepoTreePaths(const std::string& content)
 {
     std::vector<std::string> paths;
@@ -723,6 +740,27 @@ bool shouldDownloadRepoFile(const std::string& relativePath)
         || hasSuffix(".pth")
         || hasSuffix(".ckpt")
         || hasSuffix(".onnx");
+}
+
+std::string humanReadableSize(std::uint64_t bytes)
+{
+    if (bytes == 0)
+    {
+        return "0 B";
+    }
+
+    static constexpr const char* kUnits[] = {"B", "KB", "MB", "GB", "TB"};
+    double size = static_cast<double>(bytes);
+    std::size_t unitIndex = 0;
+    while (size >= 1024.0 && unitIndex + 1 < std::size(kUnits))
+    {
+        size /= 1024.0;
+        ++unitIndex;
+    }
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(unitIndex == 0 ? 0 : 1) << size << ' ' << kUnits[unitIndex];
+    return stream.str();
 }
 
 bool hasWeightLikeExtension(const std::filesystem::path& path)
@@ -1943,16 +1981,18 @@ ModelOperationResult ModelManager::performDownloadOperation(ModelDescriptor desc
     {
 #if defined(_WIN32)
         const auto remoteId = descriptor.remoteId.empty() ? descriptor.downloadUri.substr(5) : descriptor.remoteId;
-        operationState->setProgress(ModelStatus::Downloading, 0.02, "Querying Hugging Face metadata");
+        operationState->setProgress(ModelStatus::Downloading, 0.01, "Fetching Hugging Face file list");
         const auto metadataUrl = "https://huggingface.co/api/models/" + percentEncode(remoteId, false);
         std::string metadata;
         success = fetchUrlToString(metadataUrl, metadata);
         if (success)
         {
+            const auto siblingSizes = extractRepoSiblingSizes(metadata);
             auto candidateFiles = extractRepoSiblingPaths(metadata);
             if (candidateFiles.empty())
             {
                 std::string treeMetadata;
+                operationState->setProgress(ModelStatus::Downloading, 0.03, "Resolving repository file tree");
                 const auto treeUrl = "https://huggingface.co/api/models/" + percentEncode(remoteId, false) + "/tree/main?recursive=true";
                 if (fetchUrlToString(treeUrl, treeMetadata))
                 {
@@ -1976,32 +2016,73 @@ ModelOperationResult ModelManager::performDownloadOperation(ModelDescriptor desc
             else
             {
                 bool payloadSuccess = true;
+                std::uint64_t expectedPayloadBytes = 0;
+                for (const auto& relativePath : payloadFiles)
+                {
+                    if (const auto sizeIt = siblingSizes.find(relativePath); sizeIt != siblingSizes.end())
+                    {
+                        expectedPayloadBytes += sizeIt->second;
+                    }
+                }
+
+                std::uint64_t completedPayloadBytes = 0;
                 for (std::size_t index = 0; index < payloadFiles.size(); ++index)
                 {
                     const auto& relativePath = payloadFiles[index];
                     const auto fileUrl = "https://huggingface.co/" + percentEncode(remoteId, false) + "/resolve/main/" + percentEncode(relativePath, false);
                     const auto destination = installPath / std::filesystem::path(relativePath);
                     const auto displayName = std::filesystem::path(relativePath).filename().string();
+                    const auto expectedFileBytes = [&, relativePath]() -> std::uint64_t
+                    {
+                        if (const auto it = siblingSizes.find(relativePath); it != siblingSizes.end())
+                        {
+                            return it->second;
+                        }
+                        return 0;
+                    }();
 
                     const double base = static_cast<double>(index) / static_cast<double>(payloadFiles.size());
+                    std::string initialMessage = "Downloading " + displayName;
+                    if (expectedFileBytes > 0)
+                    {
+                        initialMessage += " (" + humanReadableSize(expectedFileBytes) + ")";
+                    }
                     operationState->setProgress(
                         ModelStatus::Downloading,
                         0.05 + base * 0.90,
-                        "Downloading " + displayName);
+                        std::move(initialMessage));
 
-                    const auto onProgress = [operationState, displayName, index, totalFiles = payloadFiles.size()](std::uint64_t downloaded, std::uint64_t total)
+                    const auto onProgress = [operationState,
+                                             displayName,
+                                             index,
+                                             totalFiles = payloadFiles.size(),
+                                             completedPayloadBytes,
+                                             expectedPayloadBytes,
+                                             expectedFileBytes](std::uint64_t downloaded, std::uint64_t total)
                     {
+                        double overallProgress = 0.05;
                         double fileFraction = 0.0;
-                        if (total > 0)
+                        const auto resolvedTotal = total > 0 ? total : expectedFileBytes;
+                        if (resolvedTotal > 0)
                         {
-                            fileFraction = std::clamp(static_cast<double>(downloaded) / static_cast<double>(total), 0.0, 1.0);
+                            fileFraction = std::clamp(static_cast<double>(downloaded) / static_cast<double>(resolvedTotal), 0.0, 1.0);
                         }
 
-                        const auto overallProgress = 0.05 + ((static_cast<double>(index) + fileFraction) / static_cast<double>(totalFiles)) * 0.90;
+                        if (expectedPayloadBytes > 0)
+                        {
+                            const auto totalCompleted = completedPayloadBytes + std::min<std::uint64_t>(downloaded, resolvedTotal > 0 ? resolvedTotal : downloaded);
+                            overallProgress = 0.05 + (static_cast<double>(totalCompleted) / static_cast<double>(expectedPayloadBytes)) * 0.90;
+                        }
+                        else
+                        {
+                            overallProgress = 0.05 + ((static_cast<double>(index) + fileFraction) / static_cast<double>(totalFiles)) * 0.90;
+                        }
+
                         std::string message = "Downloading " + displayName;
-                        if (total > 0)
+                        if (resolvedTotal > 0)
                         {
                             message += " " + std::to_string(static_cast<int>(std::round(fileFraction * 100.0))) + "%";
+                            message += " (" + humanReadableSize(std::min<std::uint64_t>(downloaded, resolvedTotal)) + " / " + humanReadableSize(resolvedTotal) + ")";
                         }
                         operationState->setProgress(ModelStatus::Downloading, overallProgress, std::move(message));
                     };
@@ -2018,6 +2099,7 @@ ModelOperationResult ModelManager::performDownloadOperation(ModelDescriptor desc
                     }
 
                     downloadedFiles.push_back(relativePath);
+                    completedPayloadBytes += expectedFileBytes;
                 }
                 success = payloadSuccess;
             }

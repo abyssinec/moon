@@ -1,4 +1,4 @@
-#include "AppController.h"
+﻿#include "AppController.h"
 #include "MainWindow.h"
 
 #if MOON_HAS_JUCE
@@ -25,12 +25,27 @@ public:
 
     void initialise(const juce::String&) override
     {
+        const auto executableFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+        const auto executablePath = std::filesystem::path(executableFile.getFullPathName().toStdString());
+        const auto executableDir = executablePath.parent_path();
+
+        std::error_code ec;
+        std::filesystem::current_path(executableDir, ec);
+
         if (const auto* localAppData = std::getenv("LOCALAPPDATA"))
         {
             const auto path = std::filesystem::path(localAppData) / "MoonAudioEditor" / "logs" / "bootstrap.log";
             std::filesystem::create_directories(path.parent_path());
             std::ofstream out(path, std::ios::app);
-            if (out) out << "[bootstrap] application initialise begin\n";
+            if (out)
+            {
+                out << "[bootstrap] application initialise begin\n";
+                out << "[bootstrap] executable=" << executablePath.string() << "\n";
+                out << "[bootstrap] executable_dir=" << executableDir.string() << "\n";
+                out << "[bootstrap] cwd_after_set=" << std::filesystem::current_path().string() << "\n";
+                if (ec)
+                    out << "[bootstrap] cwd_set_error=" << ec.message() << "\n";
+            }
         }
         controller_ = std::make_unique<AppController>();
         if (const auto* localAppData = std::getenv("LOCALAPPDATA"))

@@ -1,4 +1,4 @@
-#include "BackendProcessManager.h"
+﻿#include "BackendProcessManager.h"
 
 #include <array>
 #include <limits>
@@ -110,6 +110,17 @@ std::string makeBackendUrlForPort(int port)
     return "http://127.0.0.1:" + std::to_string(port);
 }
 
+bool packagedBackendPreferred()
+{
+#if MOON_HAS_JUCE
+    const auto executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName().toStdString();
+    const auto executableDir = std::filesystem::path(executable).parent_path();
+    return std::filesystem::exists(executableDir / "data" / "backend" / "main.py");
+#else
+    return false;
+#endif
+}
+
 bool isPortAvailable(int port)
 {
 #if defined(_WIN32)
@@ -213,7 +224,9 @@ bool BackendProcessManager::probeBackendReady()
 
 BackendProcessManager::StartResult BackendProcessManager::ensureBackendRunning()
 {
-    if (probeBackendReady())
+    const bool preferBundledBackend = packagedBackendPreferred();
+
+    if (!preferBundledBackend && probeBackendReady())
     {
         backendWasExternal_ = true;
         ownsBackendProcess_ = false;
@@ -399,6 +412,12 @@ int BackendProcessManager::selectOwnedBackendPort() const
 
 std::string BackendProcessManager::buildLaunchCommand(const std::filesystem::path& backendRoot, const std::filesystem::path& pythonExecutable, int port) const
 {
+    const auto launcherBat = backendRoot / "run_backend.bat";
+    if (std::filesystem::exists(launcherBat))
+    {
+        return "\"" + launcherBat.string() + "\" " + std::to_string(port);
+    }
+
     const auto uvicornExecutable = backendRoot / ".venv" / "Scripts" / "uvicorn.exe";
     if (std::filesystem::exists(uvicornExecutable))
     {
@@ -412,6 +431,14 @@ std::string BackendProcessManager::buildLaunchCommand(const std::filesystem::pat
 juce::StringArray BackendProcessManager::buildLaunchArguments(const std::filesystem::path& backendRoot, const std::filesystem::path& pythonExecutable, int port) const
 {
     juce::StringArray args;
+    const auto launcherBat = backendRoot / "run_backend.bat";
+    if (std::filesystem::exists(launcherBat))
+    {
+        args.add(launcherBat.string());
+        args.add(std::to_string(port));
+        return args;
+    }
+
     const auto uvicornExecutable = backendRoot / ".venv" / "Scripts" / "uvicorn.exe";
     if (std::filesystem::exists(uvicornExecutable))
     {
