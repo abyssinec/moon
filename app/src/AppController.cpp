@@ -1888,12 +1888,17 @@ bool AppController::pollTasks()
 
     if (state.clips.size() != clipCountBefore || state.generatedAssets.size() != generatedCountBefore)
     {
+        logger_->info(
+            "Task polling changed project state: clips "
+            + std::to_string(clipCountBefore) + " -> " + std::to_string(state.clips.size())
+            + ", generated assets " + std::to_string(generatedCountBefore) + " -> " + std::to_string(state.generatedAssets.size()));
         markPreviewPlaybackDirty();
         markProjectDirty();
         saveProject();
         stateChanged = true;
         if (state.uiState.selectedClipId != selectedClipBefore)
         {
+            logger_->info("Generated clip selection changed to " + state.uiState.selectedClipId);
             syncTransportToSelection();
         }
     }
